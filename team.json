@@ -1,0 +1,7 @@
+{
+  "supabaseUrl": "https://fvjlwafjwheptbgldzxe.supabase.co",
+  "supabaseAnonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ2amx3YWZqd2hlcHRiZ2xkenhlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTMwNDkwNzMsImV4cCI6MjEwODYyNTA3M30.icJdMrb6zGStMrSi9nQVJWOGi0WpsKOcSLVxnpEx_20",
+  "allowedDomain": "meetelise.com",
+  "brandBucket": "brand",
+  "googleLogin": false
+}

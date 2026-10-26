@@ -1,0 +1,10 @@
+# macOS
+.DS_Store
+Icon
+
+# brand files live in the team storage (Supabase), not in the public repo
+brand/*
+!brand/README.txt
+
+# local test files
+_test/

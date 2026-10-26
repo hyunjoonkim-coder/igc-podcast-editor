@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>In Good Company Editor</title>
+  <meta name="description" content="In Good Company podcast auto-editor: cuts, intro, lower thirds, titles and split layout, rendered to MP4 in your browser.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Inter:opsz,wght@14..32,100..900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/">
+      <span class="wordmark">IN GOOD<br>COMPANY</span>
+      <span class="brand-sub">Podcast Editor</span>
+    </a>
+    <div class="crumb" id="crumb"></div>
+    <div class="top-right">
+      <span class="muted" style="font-size:12px" id="saveState"></span>
+      <span class="account" id="account"></span>
+    </div>
+  </header>
+
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="side-head">
+        <button class="icon-btn side-toggle" id="sideToggle" title="Hide episodes">‹</button>
+        <span class="grow">Episodes</span>
+        <button class="btn small" id="newEpBtn">+ New</button>
+      </div>
+      <nav id="epList" class="ep-list"></nav>
+      <div class="side-actions">
+        <label class="btn small">Import<input type="file" accept=".json,application/json" id="importIn" hidden></label>
+      </div>
+      <div class="side-foot">
+        <a href="#/brand" class="side-link" id="brandLink">Brand assets</a>
+        <div class="queue-mini">Everything runs in this browser. Your videos are never uploaded anywhere.</div>
+      </div>
+    </aside>
+    <main id="main"></main>
+  </div>
+
+  <div id="modal" class="modal hidden"></div>
+  <div id="toasts" class="toasts"></div>
+
+  <script src="vendor/mp4box.all.min.js"></script>
+  <script src="vendor/mp4-muxer.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
