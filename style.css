@@ -423,3 +423,11 @@ textarea.grow-lines { resize: none; line-height: 1.35; display: block; }
 /* --- team account --- */
 .account { display: inline-flex; align-items: center; gap: 8px; margin-left: 12px; }
 .account .acct { font-size: 12px; font-weight: 600; color: var(--ink); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* --- shared episodes --- */
+.team-tag { font-style: normal; font-size: 10px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; color: #fff; background: var(--move); border-radius: 4px; padding: 1px 5px; margin-left: 6px; vertical-align: 2px; }
+.team-badge { font-size: 11px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; color: #fff; background: var(--move); border-radius: 5px; padding: 3px 8px; }
+.team-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 16px 16px 0; padding: 9px 12px; border-radius: 9px; background: #E7F6F3; border: 1px solid var(--move); font-size: 13px; }
+.team-bar.warn { background: #FFF4E5; border-color: #F2A900; }
+.team-bar.hidden { display: none; }
+.team-bar span { flex: 1; min-width: 240px; }

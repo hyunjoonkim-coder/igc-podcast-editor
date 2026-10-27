@@ -125,3 +125,62 @@ export async function uploadTeamFile(slot, file, old = null) {
 export async function removeTeamFile(path) {
   await api(`/storage/v1/object/${cfg.brandBucket}`, { method: "DELETE", headers: { Authorization: `Bearer ${await token()}` }, json: { prefixes: [path] } });
 }
+
+// ---------------------------------------------------------------- shared episodes
+// One row per shared episode: the edit itself (no videos). `version` goes up by one on every
+// save, and a save only succeeds on top of the version it was based on, so two people can't
+// silently overwrite each other.
+const rest = async (path, opts = {}) => api("/rest/v1/" + path, { ...opts, headers: { Authorization: `Bearer ${await token()}`, ...(opts.headers || {}) } });
+const LOCAL_ONLY = ["rev", "dirty", "team"];
+const strip = (p) => Object.fromEntries(Object.entries(p).filter(([k]) => !LOCAL_ONLY.includes(k)));
+
+/** [{id, name, version, updated_at, updated_by, guest}] */
+export async function listTeamEpisodes() {
+  return (await rest("episodes?select=id,name,version,updated_at,updated_by,guest:data->people->guest->>name&order=updated_at.desc")).json();
+}
+
+/** Full row, or null when it isn't shared (any more). */
+export async function getTeamEpisode(id) {
+  const rows = await (await rest(`episodes?id=eq.${encodeURIComponent(id)}&select=*`)).json();
+  return rows[0] || null;
+}
+
+/** Who saved last / who has it open right now. */
+export async function teamEpisodeMeta(id) {
+  const rows = await (await rest(`episodes?id=eq.${encodeURIComponent(id)}&select=version,updated_at,updated_by,editing_by,editing_at`)).json();
+  return rows[0] || null;
+}
+
+/** First save of an episode to the team. Returns the new version. */
+export async function shareEpisode(p) {
+  const me = teamUser()?.email || null;
+  const rows = await (await rest("episodes", {
+    method: "POST", headers: { Prefer: "return=representation" },
+    json: { id: p.id, name: p.name, data: strip(p), version: 1, updated_at: new Date().toISOString(), updated_by: me },
+  })).json();
+  return rows[0].version;
+}
+
+/** Save on top of `baseVersion`. Returns the new version, or null when someone else saved first. */
+export async function saveTeamEpisode(p, baseVersion) {
+  const me = teamUser()?.email || null;
+  const rows = await (await rest(`episodes?id=eq.${encodeURIComponent(p.id)}&version=eq.${baseVersion}`, {
+    method: "PATCH", headers: { Prefer: "return=representation" },
+    json: { name: p.name, data: strip(p), version: baseVersion + 1, updated_at: new Date().toISOString(), updated_by: me },
+  })).json();
+  return rows.length ? rows[0].version : null;
+}
+
+export async function deleteTeamEpisode(id) {
+  await rest(`episodes?id=eq.${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/** "I have this episode open" (refreshed every ~20 s while it's open; cleared when leaving). */
+export async function markEditing(id, on = true) {
+  // clearing only touches my own flag, never someone else's
+  const mine = on ? "" : `&editing_by=eq.${encodeURIComponent(teamUser()?.email || "")}`;
+  await rest(`episodes?id=eq.${encodeURIComponent(id)}${mine}`, {
+    method: "PATCH", headers: { Prefer: "return=minimal" },
+    json: on ? { editing_by: teamUser()?.email || null, editing_at: new Date().toISOString() } : { editing_by: null, editing_at: null },
+  });
+}

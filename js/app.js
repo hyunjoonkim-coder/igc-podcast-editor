@@ -5,7 +5,8 @@ import { analyzeFaces, CameraPath } from "./faces.js";
 import { Compositor } from "./compositor.js";
 import { renderEpisode, timelineFor, musicAt, renderFramedSource } from "./render.js";
 import { parseComments, classify, planCuts } from "./review.js";
-import { initTeam, teamEnabled, teamConfig, teamUser, signInPassword, signInGoogle, signOut, listTeamBrand, downloadTeamFile, uploadTeamFile, removeTeamFile } from "./team.js";
+import { initTeam, teamEnabled, teamConfig, teamUser, signInPassword, signInGoogle, signOut, listTeamBrand, downloadTeamFile, uploadTeamFile, removeTeamFile,
+  listTeamEpisodes, getTeamEpisode, teamEpisodeMeta, shareEpisode, saveTeamEpisode, deleteTeamEpisode, markEditing } from "./team.js";
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -114,19 +115,144 @@ function blankProject(name) {
 }
 
 async function loadProjects() {
-  S.projects = (await dbAll("projects")).sort((a, b) => b.updated - a.updated);
+  const byId = new Map((await dbAll("projects")).map((p) => [p.id, p]));
+  if (teamUser()) {
+    for (const r of S.teamList || []) {
+      const at = Date.parse(r.updated_at) || 0;
+      const p = byId.get(r.id);
+      if (!p) byId.set(r.id, { id: r.id, name: r.name, updated: at, team: true, remoteOnly: true, by: r.updated_by, people: { guest: { name: r.guest || "" } } });
+      else if (p.team) Object.assign(p, { name: r.version > (p.rev || 0) ? r.name : p.name, updated: Math.max(p.updated || 0, at), by: r.updated_by });
+    }
+  }
+  S.projects = [...byId.values()].sort((a, b) => (b.updated || 0) - (a.updated || 0));
   renderEpList();
+}
+
+/** The team's shared episodes (just names and versions; the edit itself is fetched when opened). */
+async function refreshTeamList() {
+  if (!teamEnabled() || !teamUser()) { S.teamList = []; return; }
+  try { S.teamList = await listTeamEpisodes(); S.teamErr = null; } catch (e) { S.teamErr = e.message; }
 }
 
 let saveTimer = null;
 function scheduleSave() {
   $("#saveState").textContent = "Saving…";
+  if (S.project.team) S.project.dirty = true;          // not on the team copy yet
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     await dbPut("projects", JSON.parse(JSON.stringify(S.project)));
-    $("#saveState").textContent = "Saved in this browser";
+    if (S.project.team && teamUser()) pushTeam();
+    else $("#saveState").textContent = "Saved in this browser";
     loadProjects();
   }, 400);
+}
+
+// ---------------------------------------------------------------- shared episodes (team)
+// The edit of a shared episode lives in Supabase; each save goes on top of the version it was
+// based on. Someone else's save shows up here within a few seconds; if both of us changed it,
+// we choose whose version to keep. The videos never leave anyone's computer.
+const sansLocal = (p) => JSON.stringify({ ...p, rev: 0, dirty: false });
+let pushing = false, pushAgain = false;
+async function pushTeam() {
+  const p = S.project;
+  if (!p?.team || !teamUser()) return;
+  if (S.syncConflict) { $("#saveState").textContent = "Saved in this browser · choose a version above"; return; }
+  if (pushing) { pushAgain = true; return; }
+  pushing = true;
+  $("#saveState").textContent = "Saving to team…";
+  try {
+    const snap = JSON.parse(JSON.stringify(p));
+    const v = snap.rev ? await saveTeamEpisode(snap, snap.rev) : await shareEpisode(snap);
+    if (S.project?.id === snap.id) {
+      if (v === null) showConflict(await getTeamEpisode(snap.id));
+      else {
+        S.project.rev = v;
+        if (sansLocal(S.project) === sansLocal(snap)) S.project.dirty = false;
+        await dbPut("projects", JSON.parse(JSON.stringify(S.project)));
+        $("#saveState").textContent = "Saved · shared with the team";
+      }
+    }
+  } catch (e) {
+    S.teamErr = e.message;
+    $("#saveState").textContent = "Saved in this browser · team sync failed (will retry)";
+  }
+  pushing = false;
+  if (pushAgain) { pushAgain = false; pushTeam(); }
+}
+
+/** Replace what's open with the team's latest version. */
+async function pullTeam(row) {
+  if (!row) return;
+  const keepView = { view: S.view };
+  S.project = { ...row.data, id: row.id, team: true, rev: row.version, dirty: false };
+  S.history = []; S.future = []; S.syncConflict = null;
+  await dbPut("projects", JSON.parse(JSON.stringify(S.project)));
+  renderTeamBar();
+  refresh(true);
+  if (keepView.view && S.view !== keepView.view) setView(keepView.view);
+  $("#saveState").textContent = "Saved · shared with the team";
+}
+
+function showConflict(row) {
+  if (!row) return;
+  S.syncConflict = row;
+  renderTeamBar();
+}
+
+function renderTeamBar() {
+  if (S.route.page !== "ep") return;
+  let bar = $("#teamBar");
+  if (!bar) { bar = document.createElement("div"); bar.id = "teamBar"; bar.className = "team-bar"; $("#main").prepend(bar); }
+  const c = S.syncConflict, o = S.teamOthers;
+  if (c) {
+    bar.className = "team-bar warn";
+    bar.innerHTML = `<span>⚠ <b>${esc(c.updated_by || "Someone")}</b> saved changes to this episode while you were editing it.</span>
+      <button class="btn small" id="tbTheirs">Use their version</button><button class="btn small primary" id="tbMine">Keep mine</button>`;
+    $("#tbTheirs").onclick = () => pullTeam(c).then(() => toast("Loaded their version"));
+    $("#tbMine").onclick = () => { S.project.rev = c.version; S.syncConflict = null; renderTeamBar(); pushTeam(); };
+  } else if (o) {
+    bar.className = "team-bar";
+    bar.innerHTML = `<span>👀 <b>${esc(o)}</b> also has this episode open. Changes sync every few seconds, so take turns to avoid clashes.</span>`;
+  } else { bar.className = "team-bar hidden"; bar.innerHTML = ""; }
+}
+
+// every few seconds while a shared episode is open: pick up the others' saves and see who's here
+let lastBeat = 0;
+setInterval(async () => {
+  const p = S.project;
+  if (S.route.page !== "ep" || !p?.team || !teamUser() || document.hidden || S.render) return;
+  try {
+    if (Date.now() - lastBeat > 20000) { lastBeat = Date.now(); markEditing(p.id).catch(() => {}); }
+    const m = await teamEpisodeMeta(p.id);
+    if (!m || S.project !== p) return;
+    const me = teamUser().email;
+    const other = m.editing_by && m.editing_by !== me && Date.now() - Date.parse(m.editing_at) < 50000 ? m.editing_by : null;
+    if (other !== S.teamOthers) { S.teamOthers = other; renderTeamBar(); }
+    if (m.version > (p.rev || 0) && !pushing && !S.syncConflict) {
+      const row = await getTeamEpisode(p.id);
+      if (S.project !== p || !row) return;
+      if (p.dirty) showConflict(row);
+      else { await pullTeam(row); toast(`Updated by ${row.updated_by || "a teammate"}`); }
+    }
+  } catch (e) { /* offline: try again next time */ }
+}, 6000);
+
+function renderTeamTag() {
+  const el = $("#teamTag");
+  if (!el) return;
+  const p = S.project;
+  if (!teamEnabled() || !p) { el.innerHTML = ""; return; }
+  if (p.team) el.innerHTML = `<span class="team-badge" title="Shared with the team: everyone signed in sees the same edit">Team</span>`;
+  else if (teamUser()) {
+    el.innerHTML = `<button class="btn small" id="shareBtn" title="Let teammates open and edit this episode">Share with team</button>`;
+    $("#shareBtn").onclick = async () => {
+      S.project.team = true; S.project.dirty = true;
+      await dbPut("projects", JSON.parse(JSON.stringify(S.project)));
+      await pushTeam();
+      await refreshTeamList(); await loadProjects(); renderTeamTag();
+      toast("Shared: teammates can open it now (they choose the same video files on their computer)");
+    };
+  } else el.innerHTML = "";
 }
 
 function mutate(fn) {
@@ -158,7 +284,12 @@ function newEpisode() {
       const name = $("#epIn").value.trim();
       if (!name) return;
       const p = blankProject(name);
+      if (teamUser()) {
+        p.team = true;
+        try { p.rev = await shareEpisode(p); } catch (e) { p.dirty = true; toast("Saved in this browser; couldn't share it yet", true); }
+      }
       await dbPut("projects", p);
+      await refreshTeamList();
       closeModal();
       await loadProjects();
       location.hash = `#/ep/${p.id}`;
@@ -174,6 +305,7 @@ async function importProject(file) {
     const p = JSON.parse(await file.text());
     if (!p.people || !Array.isArray(p.cuts)) throw new Error("This is not an episode file");
     p.id = uid(); p.updated = Date.now();
+    delete p.team; delete p.rev; delete p.dirty;
     for (const k of ["cuts", "lower_thirds", "titles"]) (p[k] || []).forEach((x) => { x.id = x.id || uid(); });
     await dbPut("projects", p);
     await loadProjects();
@@ -186,7 +318,7 @@ function renderEpList() {
   const cur = S.route.page === "ep" ? S.route.id : null;
   $("#epList").innerHTML = S.projects.length ? S.projects.map((p) => `
     <a class="ep-item ${p.id === cur ? "active" : ""}" href="#/ep/${p.id}">
-      <b>${esc(p.name)}</b><span>${esc(p.people?.guest?.name || "Guest TBD")} · ${ago(p.updated)}</span>
+      <b>${esc(p.name)}${p.team ? `<i class="team-tag" title="Shared with the team">Team</i>` : ""}</b><span>${esc(p.people?.guest?.name || "Guest TBD")} · ${ago(p.updated)}</span>
       <button class="icon-btn danger ep-del" data-del="${p.id}" title="Delete">✕</button>
     </a>`).join("") : `<div class="empty" style="padding:8px 10px">No episodes yet</div>`;
   $("#brandLink").style.color = S.route.page === "brand" ? "var(--purple)" : "";
@@ -354,6 +486,8 @@ async function route() {
     history.replaceState(null, "", S.route.page === "ep" ? `#/ep/${S.route.id}` : "#/");
     return;
   }
+  if (S.route?.page === "ep" && S.project?.team && teamUser() && !(r.page === "ep" && r.id === S.route.id)) markEditing(S.project.id, false).catch(() => {});
+  if (r.page === "home") { await refreshTeamList(); await loadProjects(); }
   S.route = r;
   renderEpList();
   if (r.page === "home") renderHome();
@@ -362,12 +496,30 @@ async function route() {
 }
 
 async function openEpisode(id) {
-  const p = await dbGet("projects", id);
-  if (!p) { $("#main").innerHTML = `<div class="home"><h1>Episode not found</h1></div>`; return; }
+  let p = await dbGet("projects", id);
+  S.syncConflict = null; S.teamOthers = null;
+  const shared = p?.team || (S.teamList || []).some((r) => r.id === id);
+  if (shared && teamUser()) {
+    try {
+      const row = await getTeamEpisode(id);
+      if (row && (!p || (row.version > (p.rev || 0) && !p.dirty))) {
+        p = { ...row.data, id, team: true, rev: row.version, dirty: false };
+        await dbPut("projects", p);
+      } else if (row && row.version > (p.rev || 0) && p.dirty) S.syncConflict = row;
+      else if (!row && p?.team) {
+        Object.assign(p, { team: false, rev: undefined, dirty: false });
+        await dbPut("projects", p);
+        toast("This episode is no longer shared with the team; it was kept in this browser");
+      }
+      if (row) markEditing(id).catch(() => {});
+    } catch (e) { if (p) toast("Couldn't reach the team: working in this browser for now", true); }
+  }
+  if (!p) { $("#main").innerHTML = `<div class="home"><h1>Episode not found</h1><p class="muted">${teamUser() ? "" : "If it was shared with the team, sign in to open it."}</p></div>`; return; }
   for (const u of Object.values(S.urls)) URL.revokeObjectURL(u);
   Object.assign(S, { project: p, sources: {}, urls: {}, faces: {}, history: [], future: [], markIn: null, markOut: null, role: "host", tl: null });
   buildEpisode();
   refresh(true);
+  renderTeamBar();
   for (const role of SRC_ROLES) {
     const h = await dbGet("handles", `${id}:${role}`);
     if (!h) continue;
@@ -611,8 +763,9 @@ function refresh(full = false) {
   const p = S.project;
   computePlan();
   if (!$("#crumbName") || $("#crumbName").textContent !== p.name) {
-    $("#crumb").innerHTML = `<span id="crumbName">${esc(p.name)}</span><button class="btn small" data-act="export" style="margin-left:10px">Export</button>`;
+    $("#crumb").innerHTML = `<span id="crumbName">${esc(p.name)}</span><button class="btn small" data-act="export" style="margin-left:10px">Export</button><span id="teamTag" style="margin-left:8px"></span>`;
   }
+  renderTeamTag();
   renderEditList(full);                          // build rows first so their fields get filled below
   $$("#main [data-path]").forEach((el) => {
     if (el === document.activeElement && !full) return;
@@ -836,7 +989,7 @@ function renderAccount() {
     ? `<span class="acct" title="Signed in to the team">${esc(u.email)}</span><button class="btn small ghost" id="signOutBtn">Sign out</button>`
     : `<button class="btn small" id="signInBtn">Sign in</button>`;
   const so = $("#signOutBtn");
-  if (so) so.onclick = async () => { await signOut(); renderAccount(); await loadBrand(); refreshPage(); toast("Signed out"); };
+  if (so) so.onclick = async () => { await signOut(); S.teamList = []; renderAccount(); await loadBrand(); await loadProjects(); refreshPage(); toast("Signed out"); };
   const si = $("#signInBtn");
   if (si) si.onclick = openSignIn;
 }
@@ -859,7 +1012,7 @@ function openSignIn() {
         await signInPassword(em, pw);
         closeModal(); renderAccount();
         toast("Signed in · loading the team's brand files");
-        await loadBrand(); refreshPage();
+        await loadBrand(); await refreshTeamList(); await loadProjects(); refreshPage();
       } catch (e) { $("#siErr", m).textContent = e.status === 400 ? "Wrong email or password" : e.message; $("#ok", m).disabled = false; }
     };
     $("#ok", m).onclick = go;
@@ -2305,7 +2458,15 @@ $("#epList").addEventListener("dblclick", (e) => {
     const name = inp.value.trim();
     if (save && name && name !== old) {
       if (S.project?.id === id) mutate((p) => { p.name = name; });
-      else { const pr = await dbGet("projects", id); if (pr) { pr.name = name; pr.updated = Date.now(); await dbPut("projects", pr); } }
+      else {
+        const pr = await dbGet("projects", id);
+        if (pr) {
+          pr.name = name; pr.updated = Date.now();
+          if (pr.team && teamUser() && pr.rev) { try { const v = await saveTeamEpisode(pr, pr.rev); if (v) pr.rev = v; else toast("A teammate changed it at the same time: open it to rename", true); } catch (e) { pr.dirty = true; } }
+          await dbPut("projects", pr);
+          await refreshTeamList();
+        }
+      }
     }
     await loadProjects();
   };
@@ -2319,7 +2480,12 @@ $("#epList").addEventListener("click", async (e) => {
   if (!d) return;
   e.preventDefault();
   const p = S.projects.find((x) => x.id === d.dataset.del);
-  if (!confirm(`Delete "${p?.name}" from this browser? (Your source video files are not touched.)`)) return;
+  const team = p?.team && teamUser();
+  if (!confirm(team ? `Delete "${p?.name}" for everyone on the team? (Video files are not touched.)` : `Delete "${p?.name}" from this browser? (Your source video files are not touched.)`)) return;
+  if (team) {
+    try { await deleteTeamEpisode(d.dataset.del); } catch (e) { return toast("Couldn't delete it for the team: " + e.message, true); }
+    await refreshTeamList();
+  }
   await dbDel("projects", d.dataset.del);
   for (const r of SRC_ROLES) await dbDel("handles", `${d.dataset.del}:${r}`);
   await loadProjects();
@@ -2332,6 +2498,7 @@ requestAnimationFrame(tick);
   await initTeam();
   renderAccount();
   await loadBrand();
+  await refreshTeamList();
   await loadProjects();
   await route();
 })();
