@@ -356,7 +356,7 @@ export function buildTimeline(project, env) {
     musicClips.push({ kind: "title", start, holdStart: it.outStart, holdEnd: it.outEnd, end: it.outEnd + tm.rampOut,
       track: tm.trackAtCard - (it.outStart - start) });
   }
-  const chapters = [{ t: 0, name: "Intro" }, ...items.filter((i) => i.kind === "title").map((i) => ({ t: i.outStart, name: i.text }))];
+  const chapters = [{ t: 0, name: "Intro" }, ...items.filter((i) => i.kind === "title").map((i) => ({ t: i.outStart, name: i.text.split("/").map((x) => x.trim()).filter(Boolean).join(" ") }))];
   return { items, overlays, music, musicClips, switches, speedRanges, duration: cursor, keep, order, moves, cuts, chapters, toOut, splitT, inPoint, outPoint, intro: introOut,
     introRange: intro ? [T(intro.start), T(intro.end)] : null, mainStart,
     hostIntroRange: hiRange, hostIntroStart: cardStart, guestCardEnd: gcEnd };

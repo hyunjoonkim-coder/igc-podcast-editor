@@ -837,7 +837,7 @@ function rowHtml(r) {
   else if (cat === "lower_thirds") body = `${tcField(f(cat, id, "at", 'data-clock="edited"'))}
       <select ${f(cat, id, "person")} style="width:auto"><option value="host">Host</option><option value="guest">Guest</option><option value="custom">Custom</option></select>
       <span class="muted" style="font-size:11px">Final Preview</span>`;
-  else if (cat === "titles") body = `${tcField(f(cat, id, "at"))}<input class="grow" placeholder="Title text" ${f(cat, id, "text")}>
+  else if (cat === "titles") body = `${tcField(f(cat, id, "at"))}<input class="grow" placeholder="Title text (/ for a new line)" ${f(cat, id, "text")}>
       <button class="icon-btn" data-act="previewTitle" data-id="${id}" title="Preview title">▶</button>`;
   else if (cat === "cuts") body = `${tcField(f(cat, id, "start"))}${tcField(f(cat, id, "end"))}`;
   else if (cat === "moves") body = `${tcField(f(cat, id, "start"))}${tcField(f(cat, id, "end"))}

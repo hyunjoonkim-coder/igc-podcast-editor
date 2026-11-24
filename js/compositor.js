@@ -385,14 +385,18 @@ export class Compositor {
   }
 }
 
+// "/" in the text forces a line break ("From Leasing Agent /to VP" → two lines); each part
+// still wraps on its own when it's too wide.
 function wrap(c, text, maxW) {
-  const words = String(text || "").split(/\s+/).filter(Boolean);
   const lines = [];
-  let cur = "";
-  for (const w of words) {
-    const trial = cur ? cur + " " + w : w;
-    if (cur && c.measureText(trial).width > maxW) { lines.push(cur); cur = w; } else cur = trial;
+  for (const part of String(text || "").split("/")) {
+    const words = part.split(/\s+/).filter(Boolean);
+    let cur = "";
+    for (const w of words) {
+      const trial = cur ? cur + " " + w : w;
+      if (cur && c.measureText(trial).width > maxW) { lines.push(cur); cur = w; } else cur = trial;
+    }
+    if (cur) lines.push(cur);
   }
-  if (cur) lines.push(cur);
   return lines.length ? lines : [""];
 }
