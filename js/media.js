@@ -258,9 +258,18 @@ export class AudioStream {
     if (planes.length === 1) planes.push(planes[0]);
     let [L, R] = planes;
     const rate = ad.sampleRate;
-    if (rate !== AUDIO_RATE) { L = resample(L, rate); R = resample(R, rate); }
-    let start = this.decodedEnd;
-    if (start === null) start = Math.round((ad.timestamp / 1e6) * AUDIO_RATE);
+    // position in the source's own sample rate, counted from the first decoded frame
+    if (this.srcPos === undefined) this.srcPos = Math.round((ad.timestamp / 1e6) * rate);
+    const start = Math.round((this.srcPos * AUDIO_RATE) / rate);
+    if (rate !== AUDIO_RATE) {
+      // resample against the running source position: rounding each AAC frame on its own
+      // (1024 samples at 44.1 kHz -> 1115 instead of 1114.56) made the audio drift late
+      const end = Math.round(((this.srcPos + n) * AUDIO_RATE) / rate);
+      L = resample(L, rate, this.srcPos, start, end - start, this.prev?.[0]);
+      R = resample(R, rate, this.srcPos, start, end - start, this.prev?.[1]);
+      this.prev = [planes[0][n - 1], planes[1][n - 1]];
+    }
+    this.srcPos += n;
     ad.close();
     this.chunks.push({ start, L, R });
     this.decodedEnd = start + L.length;
@@ -310,13 +319,16 @@ export class AudioStream {
   close() { if (this.dec && this.dec.state !== "closed") this.dec.close(); }
 }
 
-function resample(x, rate) {
-  const n = Math.round((x.length * AUDIO_RATE) / rate);
-  const out = new Float32Array(n);
+/** Linear resample of one decoded frame to 48 kHz. x starts at source sample srcPos; the output
+ *  covers 48k samples [outStart, outStart + n). prev = the source sample just before x. */
+function resample(x, rate, srcPos, outStart, n, prev) {
+  const out = new Float32Array(Math.max(0, n));
   const k = rate / AUDIO_RATE;
-  for (let i = 0; i < n; i++) {
-    const p = i * k, j = Math.floor(p), f = p - j;
-    out[i] = (x[j] ?? 0) * (1 - f) + (x[j + 1] ?? x[j] ?? 0) * f;
+  for (let i = 0; i < out.length; i++) {
+    const p = (outStart + i) * k - srcPos, j = Math.floor(p), f = p - j;
+    const a = j < 0 ? (prev ?? x[0] ?? 0) : (x[j] ?? x[x.length - 1] ?? 0);
+    const b = x[j + 1] ?? x[x.length - 1] ?? 0;
+    out[i] = a * (1 - f) + b * f;
   }
   return out;
 }
