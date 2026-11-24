@@ -5,7 +5,7 @@ import { analyzeFaces, CameraPath } from "./faces.js";
 import { Compositor } from "./compositor.js";
 import { renderEpisode, timelineFor, musicAt, renderFramedSource } from "./render.js";
 import { parseComments, classify, planCuts } from "./review.js";
-import { initTeam, teamEnabled, teamConfig, teamUser, signInPassword, signInGoogle, signOut, listTeamBrand, downloadTeamFile, uploadTeamFile, removeTeamFile,
+import { initTeam, teamEnabled, teamConfig, teamUser, teamOffline, signInPassword, signInGoogle, signOut, listTeamBrand, downloadTeamFile, uploadTeamFile, removeTeamFile,
   listTeamEpisodes, getTeamEpisode, teamEpisodeMeta, shareEpisode, saveTeamEpisode, deleteTeamEpisode, markEditing } from "./team.js";
 
 const $ = (s, el = document) => el.querySelector(s);
@@ -2499,6 +2499,12 @@ requestAnimationFrame(tick);
   renderAccount();
   await loadBrand();
   await refreshTeamList();
+  if (teamUser() && teamOffline()) {
+    const missing = ["bumper", "music"].filter((k) => !S.brand.info[k]);
+    toast(missing.length
+      ? "Can't reach the team server (Supabase may be paused), so the Intro clip and music aren't available. Ask the admin to restore the project."
+      : "Can't reach the team server right now: using the brand files saved in this browser.", !!missing.length);
+  }
   await loadProjects();
   await route();
 })();

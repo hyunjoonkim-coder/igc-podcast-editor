@@ -5,6 +5,7 @@
 const SESSION_KEY = "igc_session";
 let cfg = null;
 let session = null;
+let offline = false;            // Supabase couldn't be reached (e.g. a paused free project)
 
 export async function initTeam() {
   cfg = await fetch("team.json", { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
@@ -13,13 +14,17 @@ export async function initTeam() {
   cfg.brandBucket = cfg.brandBucket || "brand";
   try { session = JSON.parse(localStorage.getItem(SESSION_KEY) || "null"); } catch { session = null; }
   captureRedirect();
-  if (session) { try { await token(); } catch { signOutLocal(); } }
+  if (session) {
+    try { await token(); }
+    catch (e) { if (e.status === 400 || e.status === 401 || e.status === 403) signOutLocal(); else offline = true; }
+  }
   return cfg;
 }
 
 export const teamEnabled = () => !!cfg;
 export const teamConfig = () => cfg;
 export const teamUser = () => (session ? { email: session.user?.email || "" } : null);
+export const teamOffline = () => offline;
 
 const okDomain = (email) => !cfg.allowedDomain || String(email).toLowerCase().endsWith("@" + cfg.allowedDomain.toLowerCase());
 
@@ -48,11 +53,20 @@ function parseJwt(t) {
 }
 
 async function api(path, opts = {}) {
-  const r = await fetch(cfg.supabaseUrl + path, {
-    ...opts,
-    headers: { apikey: cfg.supabaseAnonKey, ...(opts.json ? { "Content-Type": "application/json" } : {}), ...(opts.headers || {}) },
-    body: opts.json ? JSON.stringify(opts.json) : opts.body,
-  });
+  let r;
+  try {
+    r = await fetch(cfg.supabaseUrl + path, {
+      ...opts,
+      headers: { apikey: cfg.supabaseAnonKey, ...(opts.json ? { "Content-Type": "application/json" } : {}), ...(opts.headers || {}) },
+      body: opts.json ? JSON.stringify(opts.json) : opts.body,
+    });
+  } catch (e) {
+    offline = true;
+    const err = new Error("Can't reach the team server (the Supabase project may be paused)");
+    err.offline = true;
+    throw err;
+  }
+  offline = false;
   if (!r.ok) {
     let msg = `${r.status}`;
     try { const j = await r.json(); msg = j.error_description || j.msg || j.message || j.error || msg; } catch { /* not json */ }
