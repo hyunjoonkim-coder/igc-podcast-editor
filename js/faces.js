@@ -1,6 +1,6 @@
 // Face tracking + locked-off framing (port of igc/faces.py), running in the browser.
 /* global faceapi */
-import { VideoReader } from "./media.js";
+import { VideoReader, drawUpright } from "./media.js";
 
 const DEAD_ZONE = 0.035;
 const SUSTAIN = 3.0;
@@ -39,8 +39,8 @@ export async function analyzeFaces(src, onProgress = () => {}, signal) {
   const out = [];
   let prev = null;
 
-  const detect = async (frame, t) => {
-    ctx.drawImage(frame, 0, 0, W, H);
+  const detect = async (frame, t, upright = false) => {
+    drawUpright(ctx, frame, upright ? 0 : tr.rotation || 0, W, H);
     const dets = await faceapi.detectAllFaces(canvas, opts);
     if (!dets.length) { out.push([t, null, null, null]); return; }
     const score = (d) => {
@@ -78,8 +78,8 @@ export async function analyzeFaces(src, onProgress = () => {}, signal) {
     const r = new VideoReader(src);
     for (let t = 0; t < dur; t += SAMPLE_GAP) {
       if (signal?.aborted) break;
-      const f = await r.frameAt(t);
-      if (f) await detect(f, t);
+      const f = await r.frameAt(t);           // already turned upright
+      if (f) await detect(f, t, true);
       onProgress(t / dur);
     }
     r.close();

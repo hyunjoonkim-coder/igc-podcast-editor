@@ -31,6 +31,24 @@ function editDelay(trak) {
   return e ? e.media_time : 0;
 }
 
+/** Clockwise rotation (0/90/180/270) the file asks players to show the video at (tkhd matrix). */
+function trackRotation(trak) {
+  const m = trak.tkhd?.matrix;
+  if (!m || m.length < 5) return 0;
+  const deg = Math.round((Math.atan2(m[1], m[0]) * 180) / Math.PI);
+  return ((Math.round(deg / 90) * 90) % 360 + 360) % 360;
+}
+
+/** Draw a decoded frame upright (applying the file's rotation) into a w x h box at 0,0. */
+export function drawUpright(ctx, frame, rotation, w, h) {
+  if (!rotation) { ctx.drawImage(frame, 0, 0, w, h); return; }
+  ctx.save();
+  if (rotation === 90) { ctx.translate(w, 0); ctx.rotate(Math.PI / 2); ctx.drawImage(frame, 0, 0, h, w); }
+  else if (rotation === 180) { ctx.translate(w, h); ctx.rotate(Math.PI); ctx.drawImage(frame, 0, 0, w, h); }
+  else { ctx.translate(0, h); ctx.rotate(-Math.PI / 2); ctx.drawImage(frame, 0, 0, h, w); }
+  ctx.restore();
+}
+
 export class Mp4Source {
   static async open(file) {
     const src = new Mp4Source();
@@ -81,9 +99,13 @@ export class Mp4Source {
     const shift = editDelay(trak);
     const sync = samples.map((s, i) => ({ i, cts: (s.cts - shift) / ts })).filter((x) => samples[x.i].is_sync).sort((a, b) => a.cts - b.cts);
     const dur = samples.length ? (samples.reduce((m, s) => Math.max(m, s.cts + s.duration), 0) - shift) / ts : 0;
+    const rotation = trackRotation(trak);
+    const turned = rotation === 90 || rotation === 270;
     return {
       id: t.id, timescale: ts, samples, sync, duration: dur, shift,
-      width: t.video.width, height: t.video.height,
+      // width/height as the video is meant to be seen (phone videos can be stored turned)
+      width: turned ? t.video.height : t.video.width, height: turned ? t.video.width : t.video.height,
+      rotation,
       fps: samples.length && dur ? samples.length / dur : 30,
       config: { codec: t.codec, codedWidth: t.video.width, codedHeight: t.video.height, description },
     };
@@ -201,7 +223,7 @@ export class VideoReader {
       const q = this.queue;
       if (q.length && (q[0].timestamp > tus || q.length >= 2 || this.ended)) {
         this.lastTs = q[0].timestamp;
-        return q[0];
+        return this._upright(q[0]);
       }
       if (this.ended && !q.length) return null;
       if (this.next < this.track.samples.length) {
@@ -215,9 +237,24 @@ export class VideoReader {
     throw new Error("Decoding stalled");
   }
 
+  /** The frame turned the way the file says to show it (cached until the next frame). */
+  _upright(f) {
+    const rot = this.track.rotation;
+    if (!rot) return f;
+    if (this.turned?.src === f && this.turned.ts === f.timestamp) return this.turned.frame;
+    const w = this.track.width, h = this.track.height;
+    if (!this.cv || this.cv.width !== w || this.cv.height !== h) { this.cv = new OffscreenCanvas(w, h); this.cx = this.cv.getContext("2d"); }
+    drawUpright(this.cx, f, rot, w, h);
+    this.turned?.frame.close();
+    this.turned = { src: f, ts: f.timestamp, frame: new VideoFrame(this.cv, { timestamp: f.timestamp, duration: f.duration ?? undefined }) };
+    return this.turned.frame;
+  }
+
   close() {
     for (const f of this.queue) f.close();
     this.queue = [];
+    this.turned?.frame.close();
+    this.turned = null;
     if (this.dec && this.dec.state !== "closed") this.dec.close();
   }
 }

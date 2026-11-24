@@ -613,7 +613,8 @@ function runFaces(role, file, src) {
 }
 
 async function runFacesNow(role, file, src) {
-  const key = `${file.name}|${file.size}|${file.lastModified}`;
+  // turned (phone) videos are analysed upright now; the suffix skips older analyses of them
+  const key = `${file.name}|${file.size}|${file.lastModified}${src.video?.rotation ? "|r" + src.video.rotation : ""}`;
   const cached = await dbGet("faces", key);
   if (cached) { S.faces[role] = { status: "done", path: new CameraPath(cached) }; renderSources(); return; }
   S.faces[role] = { status: "running", progress: 0 };
