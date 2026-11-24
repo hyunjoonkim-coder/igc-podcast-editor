@@ -243,11 +243,24 @@ var Mp4Muxer = (() => {
   };
   var trak = (track, creationTime) => box("trak", null, [
     tkhd(track, creationTime),
+    edts(track),
     mdia(track, creationTime)
   ]);
+  // IGC patch: audio edit list that hides the encoder's priming samples (info.edit = {mediaTime, duration}),
+  // so every player (QuickTime, ffmpeg, browsers) starts the audio at the same sample.
+  var edts = (track) => {
+    const e = track.info.edit;
+    if (!e || !(e.mediaTime > 0) || !(e.duration > 0)) return null;
+    return box("edts", null, [fullBox("elst", 0, 0, [
+      u32(1),
+      u32(intoTimescale(e.duration, GLOBAL_TIMESCALE)),
+      u32(e.mediaTime),
+      u16(1), u16(0)
+    ])]);
+  };
   var tkhd = (track, creationTime) => {
     let lastSample = lastPresentedSample(track.samples);
-    let durationInGlobalTimescale = intoTimescale(
+    let durationInGlobalTimescale = track.info.edit?.mediaTime > 0 && track.info.edit?.duration > 0 ? intoTimescale(track.info.edit.duration, GLOBAL_TIMESCALE) : intoTimescale(
       lastSample ? lastSample.presentationTimestamp + lastSample.duration : 0,
       GLOBAL_TIMESCALE
     );
@@ -370,8 +383,18 @@ var Mp4Muxer = (() => {
       stsc(track),
       stsz(track),
       stco(track),
-      needsCtts ? ctts(track) : null
+      needsCtts ? ctts(track) : null,
+      ...rollGroup(track)
     ]);
+  };
+  // IGC patch: AAC "roll" sample group (each frame needs the one before it to decode), as ffmpeg
+  // writes it. Without it QuickTime trims the encoder priming a second time on top of the edit list.
+  var rollGroup = (track) => {
+    if (track.info.type !== "audio" || !track.info.edit) return [];
+    return [
+      fullBox("sgpd", 1, 0, [ascii("roll"), u32(2), u32(1), i16(-1)]),
+      fullBox("sbgp", 0, 0, [ascii("roll"), u32(1), u32(track.samples.length), u32(1)])
+    ];
   };
   var stsd = (track) => fullBox("stsd", 0, 0, [
     u32(1)
@@ -1583,7 +1606,8 @@ var Mp4Muxer = (() => {
           codec: __privateGet(this, _options).audio.codec,
           numberOfChannels: __privateGet(this, _options).audio.numberOfChannels,
           sampleRate: __privateGet(this, _options).audio.sampleRate,
-          decoderConfig: null
+          decoderConfig: null,
+          edit: __privateGet(this, _options).audio.edit ?? null
         },
         timescale: __privateGet(this, _options).audio.sampleRate,
         samples: [],

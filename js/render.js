@@ -66,6 +66,39 @@ async function pickAudioConfig() {
 }
 
 /**
+ * How many silent "priming" samples this browser's AAC encoder puts in front of the audio
+ * (2112 with Apple's encoder; other systems can differ). Measured once by encoding a click and
+ * finding it again in the decoded result.
+ */
+let primingCache = null;
+export async function aacPriming(acfg) {
+  if (!acfg.codec.startsWith("mp4a")) return 0;
+  if (primingCache !== null) return primingCache;
+  const AT = 4800, N = AUDIO_RATE / 2;
+  const chunks = [];
+  let cfgOut = null;
+  const enc = new AudioEncoder({ output: (c, m) => { chunks.push(c); if (m?.decoderConfig) cfgOut = m.decoderConfig; }, error: () => {} });
+  enc.configure(acfg);
+  const data = new Float32Array(N * 2);
+  for (let i = 0; i < 48; i++) { const v = Math.sin((i / 48) * Math.PI) * 0.9; data[AT + i] = v; data[N + AT + i] = v; }
+  const ad = new AudioData({ format: "f32-planar", sampleRate: AUDIO_RATE, numberOfFrames: N, numberOfChannels: 2, timestamp: 0, data });
+  enc.encode(ad); ad.close();
+  enc.encode(new AudioData({ format: "f32-planar", sampleRate: AUDIO_RATE, numberOfFrames: 4096, numberOfChannels: 2, timestamp: Math.round((N / AUDIO_RATE) * 1e6), data: new Float32Array(8192) }));
+  await enc.flush(); enc.close();
+  const out = [];
+  const dec = new AudioDecoder({ output: (a) => { const b = new Float32Array(a.numberOfFrames); a.copyTo(b, { planeIndex: 0, format: "f32-planar" }); out.push(b); a.close(); }, error: () => {} });
+  dec.configure(cfgOut || { codec: acfg.codec, sampleRate: AUDIO_RATE, numberOfChannels: 2 });
+  for (const c of chunks) dec.decode(c);
+  await dec.flush(); dec.close();
+  let pos = 0, best = 0, at = -1;
+  for (const b of out) { for (let i = 0; i < b.length; i++) if (Math.abs(b[i]) > best) { best = Math.abs(b[i]); at = pos + i; } pos += b.length; }
+  // the click peaks 24 samples after it starts
+  const p = at - (AT + 24);
+  primingCache = best > 0.3 && p >= 0 && p < 8192 ? p : 2112;
+  return primingCache;
+}
+
+/**
  * sources: { host: Mp4Source, guest?: Mp4Source }
  * assets:  { bumper?, titleBg?, outro? } each {kind:'video', src, duration} | {kind:'image', bitmap, w, h}
  *          music?: { buffer: AudioBuffer (48 kHz) }
@@ -81,11 +114,13 @@ export async function renderEpisode({ project, sources, assets, paths, brand, dr
 
   const vcfg = await pickVideoConfig(W, H, draft);
   const acfg = await pickAudioConfig();
+  const priming = await aacPriming(acfg);
   const target = writable ? new Mp4Muxer.FileSystemWritableFileStreamTarget(writable) : new Mp4Muxer.ArrayBufferTarget();
   const muxer = new Mp4Muxer.Muxer({
     target,
     video: { codec: "avc", width: W, height: H, frameRate: FPS },
-    audio: { codec: acfg.codec === "opus" ? "opus" : "aac", numberOfChannels: 2, sampleRate: AUDIO_RATE },
+    // the edit list tells every player to skip the encoder's priming samples
+    audio: { codec: acfg.codec === "opus" ? "opus" : "aac", numberOfChannels: 2, sampleRate: AUDIO_RATE, edit: { mediaTime: priming, duration: tl.duration } },
     fastStart: writable ? false : "in-memory",
     firstTimestampBehavior: "offset",
   });
@@ -105,15 +140,13 @@ export async function renderEpisode({ project, sources, assets, paths, brand, dr
   const music = assets.music?.buffer || null;
   const mL = music?.getChannelData(0), mR = music ? music.getChannelData(Math.min(1, music.numberOfChannels - 1)) : null;
   const CH = 4800;
-  // AAC encoders put 2112 samples of priming in front of the audio, and the muxer doesn't write an
-  // edit list to hide it, so players would hear everything ~44 ms late. Skip that much of the mix
-  // up front (and pad the end) so the audio lines up with the picture.
-  let skip = acfg.codec.startsWith("mp4a") ? 2112 : 0;
+  // AAC encoders put priming samples in front of the audio. They're hidden with an edit list in
+  // the file (see the muxer options) rather than by dropping audio: players disagree about AAC
+  // priming in files without one (QuickTime assumes it, ffmpeg doesn't), which shifted the sound.
   let encPos = 0;
   const encode = (L, R) => {
-    let a = 0;
-    if (skip > 0) { a = Math.min(skip, L.length); skip -= a; }
-    const n = L.length - a;
+    const a = 0;
+    const n = L.length;
     if (n <= 0) return;
     const data = new Float32Array(n * 2);
     for (let i = 0; i < n; i++) { data[i] = Math.max(-1, Math.min(1, L[a + i])); data[n + i] = Math.max(-1, Math.min(1, R[a + i])); }
@@ -174,7 +207,8 @@ export async function renderEpisode({ project, sources, assets, paths, brand, dr
     }
     streams.forEach(([st]) => st.close());
   }
-  if (acfg.codec.startsWith("mp4a")) encode(new Float32Array(2112), new Float32Array(2112));
+  // a little silence at the end so the encoder's delay doesn't swallow the last samples
+  if (priming) encode(new Float32Array(priming + 1024), new Float32Array(priming + 1024));
   await aenc.flush();
   aenc.close();
   if (encErr) throw encErr;
@@ -294,16 +328,17 @@ export async function renderFramedSource({ src, path, volumeDb = 0, writable, on
   const ctx = canvas.getContext("2d", { alpha: false });
   const vcfg = await pickVideoConfig(W, H, false);
   const acfg = await pickAudioConfig();
+  const priming = await aacPriming(acfg);
+  const dur = Math.floor(src.duration * FPS) / FPS;
   const target = writable ? new Mp4Muxer.FileSystemWritableFileStreamTarget(writable) : new Mp4Muxer.ArrayBufferTarget();
   const muxer = new Mp4Muxer.Muxer({
     target,
     video: { codec: "avc", width: W, height: H, frameRate: FPS },
-    audio: { codec: acfg.codec === "opus" ? "opus" : "aac", numberOfChannels: 2, sampleRate: AUDIO_RATE },
+    audio: { codec: acfg.codec === "opus" ? "opus" : "aac", numberOfChannels: 2, sampleRate: AUDIO_RATE, edit: { mediaTime: priming, duration: dur } },
     fastStart: writable ? false : "in-memory",
     firstTimestampBehavior: "offset",
   });
   const check = () => { if (signal?.aborted) throw new DOMException("Cancelled", "AbortError"); };
-  const dur = Math.floor(src.duration * FPS) / FPS;
 
   // audio (same AAC priming compensation as the episode render)
   const chunks = [];
@@ -311,11 +346,10 @@ export async function renderFramedSource({ src, path, volumeDb = 0, writable, on
   const aenc = new AudioEncoder({ output: (c, m) => chunks.push({ chunk: c, meta: m }), error: (e) => { err = e; } });
   aenc.configure(acfg);
   const gain = Math.pow(10, volumeDb / 20);
-  let skip = acfg.codec.startsWith("mp4a") ? 2112 : 0, pos = 0;
+  let pos = 0;
   const encode = (L, R) => {
-    let a = 0;
-    if (skip > 0) { a = Math.min(skip, L.length); skip -= a; }
-    const n = L.length - a;
+    const a = 0;
+    const n = L.length;
     if (n <= 0) return;
     const data = new Float32Array(n * 2);
     for (let i = 0; i < n; i++) { data[i] = Math.max(-1, Math.min(1, L[a + i] * gain)); data[n + i] = Math.max(-1, Math.min(1, R[a + i] * gain)); }
@@ -334,7 +368,7 @@ export async function renderFramedSource({ src, path, volumeDb = 0, writable, on
     if (err) throw err;
     onProgress?.({ phase: "audio", frac: p / total });
   }
-  if (acfg.codec.startsWith("mp4a")) encode(new Float32Array(2112), new Float32Array(2112));
+  if (priming) encode(new Float32Array(priming + 1024), new Float32Array(priming + 1024));
   await aenc.flush(); aenc.close(); as.close();
 
   // video
