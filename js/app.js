@@ -334,8 +334,8 @@ const BRAND = {
   quote: ["Guest card quote mark", "The quote mark above the guest's name (PNG)", "image/png,image/*"],
   font_title: ["Title font", "Titles and the default wordmark (.otf / .ttf / .woff2)", ".otf,.ttf,.woff,.woff2"],
   font_bold: ["Bold font", "Bold text (.otf / .ttf / .woff2)", ".otf,.ttf,.woff,.woff2"],
-  font_regular: ["Regular font", "Guest card, split-screen labels (and lower thirds when no L3 font is set)", ".otf,.ttf,.woff,.woff2"],
-  font_l3: ["Lower-third font", "Lower thirds, e.g. InterElise_Regular.ttf (.otf / .ttf / .woff2)", ".otf,.ttf,.woff,.woff2"],
+  font_regular: ["Regular font", "Split-screen labels (and lower thirds / guest card when no Inter Elise font is set)", ".otf,.ttf,.woff,.woff2"],
+  font_l3: ["Lower-third font", "Lower thirds and the guest card, e.g. InterElise_Regular.ttf (.otf / .ttf / .woff2)", ".otf,.ttf,.woff,.woff2"],
 };
 const ASSET_KEY = { bumper: "bumper", outro: "outro", title_background: "titleBg" };
 

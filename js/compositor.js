@@ -69,6 +69,7 @@ export class Compositor {
       document.fonts.load(`300 48px "${this.fonts.regular}"`),
       document.fonts.load(`400 140px "${this.fonts.regular}"`),
       this.fonts.l3 ? document.fonts.load(`400 48px "${this.fonts.l3}"`) : null,
+      this.fonts.l3 ? document.fonts.load(`400 140px "${this.fonts.l3}"`) : null,
     ]).catch(() => {});
     this.splitBg = null;
     this.l3Sprites = new Map();
@@ -291,7 +292,7 @@ export class Compositor {
   guestCardLayout(person) {
     const G = STYLE.guestCardText, c = this.ctx;
     const width = (text, size, track = -0.03) => {
-      c.font = `400 ${size}px "${this.fonts.regular}"`;
+      c.font = `400 ${size}px "${this.fonts.l3 || this.fonts.regular}"`;
       c.letterSpacing = `${track * size}px`;
       return c.measureText(text).width;
     };
@@ -355,7 +356,7 @@ export class Compositor {
   /** A guest card line rendered once at 3x, so it scales and glides smoothly. */
   _gcSprite(ln) {
     const S = 3, track = (ln.track ?? -0.03) * ln.size;
-    const font = `400 ${ln.size}px "${this.fonts.regular}"`;
+    const font = `400 ${ln.size}px "${this.fonts.l3 || this.fonts.regular}"`;
     const key = font + "|" + track + "|" + ln.text;
     this.gcSprites ??= new Map();
     let sp = this.gcSprites.get(key);

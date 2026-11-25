@@ -32,10 +32,10 @@ export const STYLE = {
         shadow: { opacity: 0.5, direction: 135, distance: 5, softness: 50 },
         duration: (20 + 100 + 20 + 2 * 2) / 30 },
   guestCard: 4.5,
-  // Guest card: all lines 140 / leading 126. If the job title or company would leave title safe
+  // Guest card: all lines 140 / leading 135 (Inter Elise = the lower-third font slot). If the job title or company would leave title safe
   // (the centre 80% of the frame), use the Episode 15 proportions instead: name 140, title + company
   // 80, baselines 110 then 91 apart. Anything still too wide shrinks just enough to fit.
-  guestCardText: { size: 140, leading: 126, subSize: 80, subTracking: -0.015, nameToSub: 110, subLeading: 91, safeWidth: 1920 * 0.8, centerX: 956.5 },   // reference text centre sits at x≈957
+  guestCardText: { size: 140, leading: 135, subSize: 80, subTracking: -0.015, nameToSub: 110, subLeading: 91, safeWidth: 1920 * 0.8, centerX: 956.5 },   // reference text centre sits at x≈957
   titleText: { size: 180 },
   slideIn: 40 / 30,               // host matte slide-in (After Effects keys, see slideRect)
   // transition title: 2s20f on screen; letters fade in left to right over the first 33 frames
