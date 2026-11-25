@@ -111,7 +111,7 @@ export async function listTeamBrand() {
   const rows = await (await api(`/storage/v1/object/list/${cfg.brandBucket}`, { method: "POST", headers: auth, json: { prefix: "", limit: 1000, sortBy: { column: "name", order: "asc" } } })).json();
   const out = {};
   for (const r of rows) {
-    const m = /^([a-z_]+)__(.+)$/.exec(r.name || "");
+    const m = /^([a-z0-9_]+?)__(.+)$/.exec(r.name || "");
     if (!m || !r.id) continue;                       // folders have no id
     const cur = out[m[1]];
     const updated = r.updated_at || r.created_at || "";
