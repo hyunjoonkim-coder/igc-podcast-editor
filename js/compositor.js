@@ -37,7 +37,13 @@ function l3Curve(f) {
   if (f <= 0) return [0, 1];
   return [l3Op(f / 20), 1 - l3Pos(f / 20)];
 }
-const L3_SS = 6;            // L3 lines are rendered 6x larger, then shrunk into 6 sub-pixel positions
+const L3_SS = 6;
+// Guest card (IntroL3.mp4): null scale 0-15 f, quote opacity 0-14 f, text rise over 20 f and
+// text opacity over 18.2 f per line (starts staggered, see drawGuestCard)
+const gcScale = bezier(0.11, 0.241, 0.171, 1);
+const gcQuoteOp = bezier(0.112, 0, 0.295, 1);
+const gcTextPos = bezier(0.191, 0.045, 0.3, 1);
+const gcTextOp = bezier(0.298, 0.367, 0.371, 1);            // L3 lines are rendered 6x larger, then shrunk into 6 sub-pixel positions
 
 export const DEFAULT_FONTS = { title: "Barlow Condensed", bold: "Inter", regular: "Inter", l3: null };   // l3: null = the regular font
 
@@ -308,36 +314,72 @@ export class Compositor {
     return { lines, compact };
   }
 
-  /** Guest intro card. The whole block fades in while rising. t = seconds since the card appeared. */
+  /** Guest intro card. t = seconds since the card appeared.
+   *  Matched to the After Effects comp (IntroL3.mp4), all eases fitted to it frame by frame:
+   *  • everything hangs on a null that scales 50% -> 100% over frames 0-15 around the frame centre
+   *  • the quote mark fades in over frames 0-14
+   *  • each text line rises 60 px (inside the null) over 20 frames and fades in, top line first */
   drawGuestCard(t, person) {
     const c = this._begin();
     c.fillStyle = STYLE.background;
     c.fillRect(0, 0, STYLE.width, STYLE.height);
-    const u = easeOut(t / 0.6);
-    const dy = 34 * (1 - u);
-    c.globalAlpha = u;
+    const f = t * 30;
     const { lines, compact } = this.guestCardLayout(person);
     // the shorter compact block sits a little lower, as in the Episode 15 reference (quote top 311)
     // a 2-line job title adds a line: lift the block by half of each extra line so it stays centred
     const G = STYLE.guestCardText, extra = Math.max(0, lines.length - 3);
     const step = compact ? (lines[1] ? G.subLeading * (lines[1].size / G.subSize) : G.subLeading) : G.leading;
     const qTop = (compact ? 311 : 268) - (extra * step) / 2;
-    if (this.quote) c.drawImage(this.quote, 960 - this.quote.width / 2, qTop + dy);
-    else this._quoteIcon(c, 960, qTop + 51 + dy, 1);
-    c.textAlign = "center";
-    c.textBaseline = "alphabetic";
-    c.fillStyle = STYLE.purple;
-    const first = qTop + 105 + 48 + (lines[0]?.size ?? 140) * 0.727;
-    for (const ln of lines) {
-      c.font = `400 ${ln.size}px "${this.fonts.regular}"`;
-      const ls = (ln.track ?? -0.03) * ln.size;
-      c.letterSpacing = `${ls}px`;
-      // the canvas also adds spacing after the last letter; shift by half of it to stay truly centred
-      c.fillText(ln.text, STYLE.guestCardText.centerX + ls / 2, first + ln.dy + dy);
+    const sc = f >= 15 ? 1 : 0.5 + 0.5 * Math.min(1, gcScale(f / 15));
+    c.imageSmoothingQuality = "high";
+    c.translate(960, 540);
+    c.scale(sc, sc);
+    c.translate(-960, -540);
+    c.globalAlpha = gcQuoteOp(f / 14);
+    if (c.globalAlpha > 0.002) {
+      if (this.quote) c.drawImage(this.quote, 960 - this.quote.width / 2, qTop);
+      else this._quoteIcon(c, 960, qTop + 51, 1);
     }
+    const first = qTop + 105 + 48 + (lines[0]?.size ?? 140) * 0.727;
+    lines.forEach((ln, j) => {
+      const op = gcTextOp((f - (1.62 + 1.43 * j)) / 18.2);
+      if (op <= 0.002) return;
+      const dy = 60 * (1 - gcTextPos((f - (-0.72 + 1.86 * j)) / 20));
+      const sp = this._gcSprite(ln);
+      c.globalAlpha = op;
+      c.drawImage(sp.canvas, sp.x, first + ln.dy + dy - sp.oy, sp.w, sp.h);
+    });
     c.globalAlpha = 1;
-    c.letterSpacing = "0px";
-    c.textAlign = "left";
+  }
+
+  /** A guest card line rendered once at 3x, so it scales and glides smoothly. */
+  _gcSprite(ln) {
+    const S = 3, track = (ln.track ?? -0.03) * ln.size;
+    const font = `400 ${ln.size}px "${this.fonts.regular}"`;
+    const key = font + "|" + track + "|" + ln.text;
+    this.gcSprites ??= new Map();
+    let sp = this.gcSprites.get(key);
+    if (sp) return sp;
+    const m = this.ctx;
+    m.save();
+    m.font = font;
+    m.letterSpacing = `${track}px`;
+    const tw = m.measureText(ln.text).width;
+    m.restore();
+    const pad = 20, w = Math.ceil(tw + 2 * pad), h = Math.ceil(ln.size * 1.5 + 2 * pad), oy = Math.ceil(ln.size * 1.1 + pad);
+    const cv = new OffscreenCanvas(w * S, h * S), c = cv.getContext("2d");
+    c.scale(S, S);
+    c.font = font;
+    c.letterSpacing = `${track}px`;
+    c.textBaseline = "alphabetic";
+    c.textAlign = "center";
+    c.fillStyle = STYLE.purple;
+    // the canvas also adds spacing after the last letter; shift by half of it to stay truly centred
+    c.fillText(ln.text, w / 2 + track / 2, oy);
+    sp = { canvas: cv, x: STYLE.guestCardText.centerX - w / 2, oy, w, h };
+    if (this.gcSprites.size > 20) this.gcSprites.clear();
+    if (document.fonts.check(font, ln.text)) this.gcSprites.set(key, sp);
+    return sp;
   }
 
   /** Rect of the host panel during the slide-in (u = 0..1 over STYLE.slideIn = 40 frames).
