@@ -27,16 +27,17 @@ function bezier(x1, y1, x2, y2) {
 const ease7070 = bezier(0.7, 0, 0.3, 1);          // AE ease, 70% influence both sides
 const easyEase = bezier(1 / 3, 0, 2 / 3, 1);       // AE Easy Ease (33.33%)
 
-// Lower-third line in, fitted to the After Effects render (LowerThirds_Locked_1.mov, measured frame
-// by frame; both curves match it within 0.3%). Position and opacity have their own ease; the out
-// is the same curve played backwards.
-const l3Pos = bezier(0.214, 0.189, 0.018, 0.982);   // over 19.33 f, starting 0.13 f after the line's start
-const l3Op = bezier(0.273, 0, 0.082, 0.829);        // over 16.69 f, starting 0.415 f before it
+// Lower-third line in: each line moves up 30 px and fades in over frames 0-20 (lines 2 f apart).
+// Eases fitted to the After Effects render (LowerThirds_Locked_1.mov, measured frame by frame).
+// The out is the same curve played backwards.
+const l3Pos = bezier(0.218, 0.155, 0.005, 1);
+const l3Op = bezier(0.213, 0.044, 0.067, 1);
 /** f = frames since this line started → [opacity, rise left (0..1)] */
 function l3Curve(f) {
   if (f <= 0) return [0, 1];
-  return [clamp01(l3Op((f + 0.415) / 16.689)), 1 - l3Pos((f - 0.13) / 19.332)];
+  return [l3Op(f / 20), 1 - l3Pos(f / 20)];
 }
+const L3_SS = 6;            // L3 lines are rendered 6x larger, then shrunk into 6 sub-pixel positions
 
 export const DEFAULT_FONTS = { title: "Barlow Condensed", bold: "Inter", regular: "Inter", l3: null };   // l3: null = the regular font
 
@@ -182,18 +183,25 @@ export class Compositor {
       if (fromIn <= 0 || fromOut <= 0) return;
       const [u, rise] = l3Curve(Math.min(fromIn, fromOut));
       if (u <= 0.002) return;
-      // drawn from a pre-rendered image so the line can sit between pixels: text drawn directly
-      // snaps to whole pixels and steps visibly as it settles
-      const sp = this._l3Sprite(text);
+      // Drawn from pre-rendered images at 1/6-pixel steps, so the slow end of the landing glides
+      // instead of snapping to whole pixels or going soft/sharp between them.
+      const sp = this._l3Sprite(text), k = this.scale;
+      const dy = (base + j * L.line + L.rise * rise - sp.oy) * k;
+      let iy = Math.floor(dy), ph = Math.round((dy - iy) * L3_SS);
+      if (ph === L3_SS) { iy += 1; ph = 0; }
+      c.save();
+      c.setTransform(1, 0, 0, 1, 0, 0);
       c.globalAlpha = u;
-      c.drawImage(sp.canvas, x - sp.ox, base + j * L.line + L.rise * rise - sp.oy, sp.w, sp.h);
+      c.drawImage(sp.phases[ph], Math.round((x - sp.ox) * k), iy);
+      c.restore();
     });
     c.globalAlpha = 1;
   }
 
-  /** One L3 line with its drop shadow, rendered once at output resolution. */
+  /** One L3 line with its drop shadow, rendered once at 6x and box-filtered down into 6 images,
+   *  each shifted down by a further 1/6 pixel (output pixels). */
   _l3Sprite(text) {
-    const L = STYLE.l3, k = this.scale;
+    const L = STYLE.l3, k = this.scale, S = L3_SS;
     const font = this.fonts.l3 ? `400 ${L.size}px "${this.fonts.l3}"` : `${L.weight} ${L.size}px "${this.fonts.regular}"`;
     const key = font + "|" + k + "|" + text;
     this.l3Sprites ??= new Map();
@@ -201,24 +209,55 @@ export class Compositor {
     if (sp) return sp;
     const pad = 60, ox = pad, oy = L.size + pad;                    // baseline sits oy below the top
     const m = this.ctx;
+    m.save();
     m.font = font;
     m.letterSpacing = `${L.tracking * L.size}px`;
-    const w = Math.ceil(m.measureText(text).width) + 2 * pad, h = Math.ceil(L.size * 1.4) + 2 * pad;
-    m.letterSpacing = "0px";
-    const cv = new OffscreenCanvas(Math.ceil(w * k), Math.ceil(h * k));
-    const c = cv.getContext("2d");
-    c.scale(k, k);
+    const tw = m.measureText(text).width;
+    m.restore();
+    const W = Math.ceil((tw + 2 * pad) * k), H = Math.ceil((L.size * 1.4 + 2 * pad) * k);   // output pixels
+    const big = new OffscreenCanvas(W * S, H * S), c = big.getContext("2d", { willReadFrequently: true });
+    const ks = k * S;
+    c.scale(ks, ks);
     c.font = font;
     c.letterSpacing = `${L.tracking * L.size}px`;
     c.textBaseline = "alphabetic";
     c.fillStyle = "#FFFFFF";
     const sh = L.shadow, rad = (sh.direction * Math.PI) / 180;   // AE: 0° = up, clockwise
     c.shadowColor = `rgba(0,0,0,${sh.opacity})`;
-    c.shadowOffsetX = Math.sin(rad) * sh.distance * k;
-    c.shadowOffsetY = -Math.cos(rad) * sh.distance * k;
-    c.shadowBlur = sh.softness * 0.6 * k;
+    c.shadowOffsetX = Math.sin(rad) * sh.distance * ks;
+    c.shadowOffsetY = -Math.cos(rad) * sh.distance * ks;
+    c.shadowBlur = sh.softness * 0.6 * ks;
     c.fillText(text, ox, oy);
-    sp = { canvas: cv, ox, oy, w: cv.width / k, h: cv.height / k };
+    // sum each S-wide column block (premultiplied), row by row of the big image
+    const src = c.getImageData(0, 0, W * S, H * S).data, R = H * S;
+    const sumA = new Float32Array(R * W), sumC = new Float32Array(R * W);   // colour is grey: one channel
+    for (let r = 0; r < R; r++) {
+      for (let x = 0; x < W; x++) {
+        let a = 0, cc = 0;
+        for (let i = 0, o = (r * W * S + x * S) * 4; i < S; i++, o += 4) { const al = src[o + 3]; a += al; cc += src[o] * al; }
+        sumA[r * W + x] = a; sumC[r * W + x] = cc;
+      }
+    }
+    const phases = [];
+    for (let p = 0; p < S; p++) {
+      const out = new ImageData(W, H + 1), d = out.data, n = S * S;
+      for (let y = 0; y <= H; y++) {
+        for (let x = 0; x < W; x++) {
+          let a = 0, cc = 0;
+          for (let i = 0; i < S; i++) {
+            const r = y * S - p + i;                  // shifted down by p/S of an output pixel
+            if (r < 0 || r >= R) continue;
+            a += sumA[r * W + x]; cc += sumC[r * W + x];
+          }
+          const o = (y * W + x) * 4, v = a ? cc / a : 0;
+          d[o] = d[o + 1] = d[o + 2] = v; d[o + 3] = a / n;
+        }
+      }
+      const pc = new OffscreenCanvas(W, H + 1);
+      pc.getContext("2d").putImageData(out, 0, 0);
+      phases.push(pc);
+    }
+    sp = { phases, ox, oy };
     if (this.l3Sprites.size > 40) this.l3Sprites.clear();
     if (document.fonts.check(font, text)) this.l3Sprites.set(key, sp);   // don't keep a fallback-font copy
     return sp;
