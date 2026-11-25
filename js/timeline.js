@@ -24,8 +24,8 @@ export const STYLE = {
   },
   solo: { faceHeight: 0.26, faceY: 0.42 },
   // Lower third: Inter 48 / leading 54 / tracking -10 / #FFFFFF. Each line rises 30 px and fades in
-  // over 20 f (ease 100/0), holds 100 f, then drops 30 px and fades out over 20 f (ease 0/100).
-  // Lines start 2 f apart.
+  // over ~18 f (curve measured from the AE render, see L3_IN in compositor.js), holds, then drops
+  // and fades out on the same curve backwards. Lines start 2 f apart; 144 f in all for 3 lines.
   // drop shadow: black, 50% opacity, direction 135°, softness 50 (After Effects terms; distance 5 = AE default)
   // Matched to the After Effects comp: Inter Variable, weight 300 (Light), optical size 32, tracking 0.
   l3: { x: 103, baseline: 865, size: 48, weight: 300, line: 54, tracking: 0, rise: 30, inF: 20, holdF: 100, outF: 20, lineOffsetF: 2,
@@ -37,7 +37,7 @@ export const STYLE = {
   // 80, baselines 110 then 91 apart. Anything still too wide shrinks just enough to fit.
   guestCardText: { size: 140, leading: 126, subSize: 80, subTracking: -0.015, nameToSub: 110, subLeading: 91, safeWidth: 1920 * 0.8, centerX: 956.5 },   // reference text centre sits at x≈957
   titleText: { size: 180 },
-  slideIn: 0.8,
+  slideIn: 40 / 30,               // host matte slide-in (After Effects keys, see slideRect)
   // transition title: 2s20f on screen; letters fade in left to right over the first 33 frames
   titleReveal: 33 / 30,
   titleDuration: 80 / 30,          // for a ~12-letter title ("This or That")

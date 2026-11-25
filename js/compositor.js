@@ -3,7 +3,6 @@ import { STYLE, personLines } from "./timeline.js";
 
 const clamp01 = (u) => Math.min(1, Math.max(0, u));
 const easeOut = (u) => 1 - Math.pow(1 - clamp01(u), 3);
-const easeInOut = (u) => { u = clamp01(u); return u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2; };
 const lerp = (a, b, u) => a + (b - a) * u;
 
 /** Cubic-bezier easing (like CSS / After Effects keyframe influence). */
@@ -25,10 +24,23 @@ function bezier(x1, y1, x2, y2) {
     return sy(t);
   };
 }
-// In:  leaves the first key linearly, arrives with 100% influence (decelerates to rest).
-const easeIn100 = bezier(0.333, 0.333, 0, 1);
-// Out: leaves with 100% influence (starts slowly), reaches the last key linearly.
-const easeOut100 = bezier(1, 0, 0.667, 0.667);
+const ease7070 = bezier(0.7, 0, 0.3, 1);          // AE ease, 70% influence both sides
+const easyEase = bezier(1 / 3, 0, 2 / 3, 1);       // AE Easy Ease (33.33%)
+
+// Lower-third line in, measured frame by frame from the After Effects render
+// (LowerThirds_Locked_1.mov): [opacity, rise left (0..1 of STYLE.l3.rise)] for each frame after
+// the line starts. The out is the same curve played backwards.
+const L3_IN = [
+  [0, 1], [0.035, 0.942], [0.128, 0.808], [0.294, 0.617], [0.445, 0.458], [0.559, 0.358],
+  [0.649, 0.283], [0.719, 0.225], [0.778, 0.175], [0.816, 0.133], [0.867, 0.108], [0.903, 0.083],
+  [0.929, 0.058], [0.950, 0.042], [0.960, 0.033], [0.983, 0.025], [0.998, 0.017], [1, 0.008], [1, 0],
+];
+function l3Curve(f) {                              // f = frames since this line started (fractional ok)
+  if (f <= 0) return L3_IN[0];
+  if (f >= L3_IN.length - 1) return L3_IN[L3_IN.length - 1];
+  const i = Math.floor(f), k = f - i, a = L3_IN[i], b = L3_IN[i + 1];
+  return [lerp(a[0], b[0], k), lerp(a[1], b[1], k)];
+}
 
 export const DEFAULT_FONTS = { title: "Barlow Condensed", bold: "Inter", regular: "Inter" };
 
@@ -173,18 +185,16 @@ export class Compositor {
     c.shadowBlur = sh.softness * 0.6 * this.scale;
     const f = t * 30;                              // frames
     lines.forEach((text, j) => {
-      // in: top line first (1, 2, 3, …) · out: bottom line first (…, 3, 2, 1) · 2 frames apart
-      const inStart = j * L.lineOffsetF;
-      const outStart = L.inF + L.holdF + (n - 1 - j) * L.lineOffsetF;
-      let u;                                       // 0 = hidden/low, 1 = in place
-      let dy;
-      if (f < inStart) return;
-      if (f < inStart + L.inF) { u = easeIn100((f - inStart) / L.inF); dy = L.rise * (1 - u); }
-      else if (f < outStart) { u = 1; dy = 0; }
-      else { const k = easeOut100((f - outStart) / L.outF); u = 1 - k; dy = L.rise * k; }
+      // in: top line first (1, 2, 3, …) · out: bottom line first (…, 3, 2, 1) · 2 frames apart.
+      // The out mirrors the in exactly (the whole L3 is symmetric in time).
+      const end = L.inF + L.holdF + L.outF + (n - 1) * L.lineOffsetF;   // 144 f for 3 lines
+      const fromIn = f - j * L.lineOffsetF;
+      const fromOut = end - f - j * L.lineOffsetF;
+      if (fromIn <= 0 || fromOut <= 0) return;
+      const [u, rise] = l3Curve(Math.min(fromIn, fromOut));
       if (u <= 0.002) return;
       c.globalAlpha = u;
-      c.fillText(text, x, base + j * L.line + dy);
+      c.fillText(text, x, base + j * L.line + L.rise * rise);
     });
     c.globalAlpha = 1;
     c.letterSpacing = "0px";
@@ -268,16 +278,18 @@ export class Compositor {
     c.textAlign = "left";
   }
 
-  /** Rect of the host panel during the slide-in (u = 0..1). */
+  /** Rect of the host panel during the slide-in (u = 0..1 over STYLE.slideIn = 40 frames).
+   *  After Effects matte keys (30 fps):
+   *    Position x  0f 2963.1404 -> 30f 1000, ease 70/70 (the rectangle sits 40 px left of the
+   *                layer position, so 1000 is the frame centre)
+   *    Size        20f 1870x1030 -> 40f 1920x1080, easy ease
+   *    Roundness   20f 24 -> 40f 0, easy ease */
   slideRect(u) {
-    const m = 30, W = STYLE.width, H = STYLE.height;
-    const split = 0.62;
-    if (u < split) {
-      const k = easeInOut(u / split);
-      return { x: lerp(W + 10, m, k), y: m, w: W - 2 * m, h: H - 2 * m, r: 28 };
-    }
-    const k = easeInOut((u - split) / (1 - split));
-    return { x: lerp(m, 0, k), y: lerp(m, 0, k), w: lerp(W - 2 * m, W, k), h: lerp(H - 2 * m, H, k), r: lerp(28, 0, k) };
+    const f = clamp01(u) * 40;
+    const x = lerp(2963.1404, 1000, ease7070(f / 30)) - 40;
+    const k = easyEase((f - 20) / 20);
+    const w = lerp(1870, 1920, k), h = lerp(1030, 1080, k);
+    return { x: x - w / 2, y: 540 - h / 2, w, h, r: lerp(24, 0, k) };
   }
 
   /** Draw the host video into the sliding panel (on top of the guest card). */
