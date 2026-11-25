@@ -71,6 +71,7 @@ export class Compositor {
       document.fonts.load(`400 140px "${this.fonts.regular}"`),
       this.fonts.l3 ? document.fonts.load(`400 48px "${this.fonts.l3}"`) : null,
       this.fonts.l3 ? document.fonts.load(`400 140px "${this.fonts.l3}"`) : null,
+      this.fonts.l3 ? document.fonts.load(`400 180px "${this.fonts.l3}"`) : null,
     ]).catch(() => {});
     this.splitBg = null;
     this.l3Sprites = new Map();
@@ -157,7 +158,7 @@ export class Compositor {
     this._wordmark(c, STYLE.logo.x, STYLE.logo.y, STYLE.logo.height);
     const sp = STYLE.split;
     // Inter 32 / leading 37 / tracking -30 / #0E0D0C
-    c.font = `400 ${sp.labelSize}px "${this.fonts.regular}"`;
+    c.font = `400 ${sp.labelSize}px "${this.fonts.l3 || this.fonts.regular}"`;
     c.letterSpacing = `${-0.03 * sp.labelSize}px`;
     c.fillStyle = STYLE.text;
     c.textBaseline = "alphabetic";
@@ -469,7 +470,7 @@ export class Compositor {
   titleLines(text) {
     if (!this._measure) this._measure = new OffscreenCanvas(8, 8).getContext("2d");
     const c = this._measure, size = STYLE.titleText.size;
-    c.font = `400 ${size}px "${this.fonts.regular}"`;
+    c.font = `400 ${size}px "${this.fonts.l3 || this.fonts.regular}"`;
     c.letterSpacing = `${-0.03 * size}px`;
     return wrap(c, text, STYLE.width - 240).length;
   }
@@ -479,7 +480,7 @@ export class Compositor {
     if (bg?.img) this._fill(c, bg.img, bg.w, bg.h);
     else { c.fillStyle = STYLE.background; c.fillRect(0, 0, STYLE.width, STYLE.height); }
     const size = STYLE.titleText.size;
-    c.font = `400 ${size}px "${this.fonts.regular}"`;
+    c.font = `400 ${size}px "${this.fonts.l3 || this.fonts.regular}"`;
     c.letterSpacing = `${-0.03 * size}px`;
     c.textAlign = "left";
     c.textBaseline = "alphabetic";
