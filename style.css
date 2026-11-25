@@ -431,3 +431,13 @@ textarea.grow-lines { resize: none; line-height: 1.35; display: block; }
 .team-bar.warn { background: #FFF4E5; border-color: #F2A900; }
 .team-bar.hidden { display: none; }
 .team-bar span { flex: 1; min-width: 240px; }
+
+/* colour curves panel */
+.grade-panel { position: fixed; left: 12px; bottom: 12px; z-index: 60; width: 292px; background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 12px; box-shadow: 0 12px 40px rgba(0,0,0,.18); }
+.grade-panel .gp-top { cursor: move; user-select: none; display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 13px; }
+.grade-panel .gp-tabs { display: flex; gap: 4px; margin-bottom: 8px; }
+.grade-panel .gp-tabs button { flex: 1; border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 4px 0; font-size: 12px; font-weight: 600; color: var(--c); cursor: pointer; }
+.grade-panel .gp-tabs button.on { background: var(--c); color: #fff; border-color: var(--c); }
+.grade-panel canvas { width: 266px; height: 266px; display: block; cursor: crosshair; touch-action: none; }
+.grade-panel .gp-row { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+.grade-panel .chk { font-size: 12px; margin-left: auto; }

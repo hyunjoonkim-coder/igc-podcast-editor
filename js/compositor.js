@@ -1,5 +1,6 @@
 // Draws every output frame on a canvas. All layout numbers are in 1920x1080 space.
 import { STYLE, personLines } from "./timeline.js";
+import { Grader, gradeLut, gradeKey, isIdentity, imgSize } from "./grade.js";
 
 const clamp01 = (u) => Math.min(1, Math.max(0, u));
 const easeOut = (u) => 1 - Math.pow(1 - clamp01(u), 3);
@@ -73,6 +74,33 @@ export class Compositor {
     ]).catch(() => {});
     this.splitBg = null;
     this.l3Sprites = new Map();
+  }
+
+  /** Colour curves per camera: { host: grade, guest: grade } (see grade.js). */
+  setGrades(grades, bypass = false) {
+    const key = bypass ? "" : JSON.stringify(grades || {});
+    if (key === this.gradeKey) return;
+    this.gradeKey = key;
+    this.luts = {};
+    if (bypass) return;
+    for (const [role, g] of Object.entries(grades || {})) if (!isIdentity(g)) this.luts[role] = gradeLut(g);
+  }
+
+  /** Draw a camera source (src = {img, crop, role}) into x, y, w, h with that camera's curves. */
+  _drawSrc(c, src, x, y, w, h) {
+    const lut = src.role && this.luts?.[gradeKey(src.role)];
+    if (lut) {
+      this.grader ??= new Grader();
+      if (this.grader.ok) {
+        try {
+          const [iw, ih] = imgSize(src.img);
+          const g = this.grader.apply(src.img, src.crop, lut, iw, ih);
+          c.drawImage(g.canvas, 0, 0, g.w, g.h, x, y, w, h);
+          return;
+        } catch (e) { console.warn("curves:", e); }
+      }
+    }
+    c.drawImage(src.img, ...src.crop, x, y, w, h);
   }
 
   setPeople(people) {
@@ -153,7 +181,7 @@ export class Compositor {
     } else {
       c.fillStyle = "#000";
       c.fillRect(0, 0, STYLE.width, STYLE.height);
-      if (main?.img) c.drawImage(main.img, ...main.crop, 0, 0, STYLE.width, STYLE.height);
+      if (main?.img) this._drawSrc(c, main, 0, 0, STYLE.width, STYLE.height);
     }
   }
 
@@ -164,7 +192,7 @@ export class Compositor {
     c.clip();
     c.fillStyle = "#111";
     c.fillRect(x, y, w, h);
-    if (src?.img) c.drawImage(src.img, ...src.crop, x, y, w, h);
+    if (src?.img) this._drawSrc(c, src, x, y, w, h);
     c.restore();
   }
 
@@ -407,7 +435,7 @@ export class Compositor {
     c.clip();
     c.fillStyle = "#000";
     c.fillRect(r.x, r.y, r.w, r.h);
-    if (src?.img) c.drawImage(src.img, ...src.crop, r.x, r.y, r.w, r.h);
+    if (src?.img) this._drawSrc(c, src, r.x, r.y, r.w, r.h);
     c.restore();
   }
 

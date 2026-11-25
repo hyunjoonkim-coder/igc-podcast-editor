@@ -3,6 +3,7 @@ import { parseTc, fmtTc, STYLE, FPS, titleLength } from "./timeline.js";
 import { Mp4Source } from "./media.js";
 import { analyzeFaces, CameraPath } from "./faces.js";
 import { Compositor } from "./compositor.js";
+import { CHANNELS, curvePoints, curveFn, isIdentity, gradeKey } from "./grade.js";
 import { renderEpisode, timelineFor, musicAt, renderFramedSource } from "./render.js";
 import { parseComments, classify, planCuts } from "./review.js";
 import { initTeam, teamEnabled, teamConfig, teamUser, teamOffline, signInPassword, signInGoogle, signOut, listTeamBrand, downloadTeamFile, uploadTeamFile, removeTeamFile,
@@ -490,6 +491,7 @@ async function route() {
   if (S.route?.page === "ep" && S.project?.team && teamUser() && !(r.page === "ep" && r.id === S.route.id)) markEditing(S.project.id, false).catch(() => {});
   if (r.page === "home") { await refreshTeamList(); await loadProjects(); }
   S.route = r;
+  closeGrade();
   renderEpList();
   if (r.page === "home") renderHome();
   else if (r.page === "brand") renderBrand();
@@ -530,6 +532,117 @@ async function openEpisode(id) {
     } catch (e) { /* file moved */ }
   }
 }
+
+// ---------------------------------------------------------------- colour curves
+// A floating panel (the preview stays visible): RGB curve + R / G / B curves for one camera.
+// Click to add a point, drag to move, double-click or drag it out of the box to take it away.
+const CH_COLOR = { rgb: "#1C1C24", r: "#E5484D", g: "#2E9E5B", b: "#3B6FE0" };
+function openGrade(role) {
+  closeGrade();
+  if (S.view !== "preview" && S.view !== "program") setView("preview");
+  const el = document.createElement("div");
+  el.id = "gradePanel";
+  el.className = "grade-panel";
+  el.innerHTML = `<div class="gp-top"><b>${role === "guest" ? "Guest" : "Host"} curves</b><button class="icon-btn" data-g="close" title="Close">✕</button></div>
+    <div class="gp-tabs">${CHANNELS.map((ch) => `<button data-ch="${ch}" style="--c:${CH_COLOR[ch]}">${ch.toUpperCase()}</button>`).join("")}</div>
+    <canvas width="512" height="512"></canvas>
+    <div class="gp-row"><button class="btn small" data-g="resetCh">Reset channel</button><button class="btn small" data-g="resetAll">Reset all</button>
+      <label class="chk" title="Show the original colours"><input type="checkbox" data-g="bypass"> Before</label></div>
+    <p class="muted" style="font-size:11px;margin:6px 0 0">Click to add a point · drag to move · double-click to delete. Shown in the Final / Raw preview and in renders.</p>`;
+  document.body.appendChild(el);
+  // drag the panel by its title bar
+  $(".gp-top", el).onpointerdown = (e) => {
+    if (e.target.closest("button")) return;
+    const r = el.getBoundingClientRect(), dx = e.clientX - r.left, dy = e.clientY - r.top;
+    const mv = (ev) => { el.style.left = Math.max(0, Math.min(innerWidth - r.width, ev.clientX - dx)) + "px"; el.style.top = Math.max(0, Math.min(innerHeight - 40, ev.clientY - dy)) + "px"; el.style.bottom = "auto"; };
+    const up = () => { removeEventListener("pointermove", mv); removeEventListener("pointerup", up); };
+    addEventListener("pointermove", mv); addEventListener("pointerup", up);
+  };
+  const cv = $("canvas", el), ctx = cv.getContext("2d");
+  let ch = "rgb", drag = -1, pushed = false;
+  const grade = () => S.project.grade?.[role] || {};
+  const pts = () => curvePoints(grade(), ch);
+  const save = (p) => {
+    if (!pushed) { S.history.push(JSON.stringify(S.project)); S.future = []; pushed = true; }
+    S.project.grade ??= {};
+    // (kept even when it's still a straight line: a point just added on the diagonal must stay)
+    S.project.grade[role] = { ...(S.project.grade[role] || {}), [ch]: p.map(([x, y]) => [+x.toFixed(4), +y.toFixed(4)]) };
+    S.project.updated = Date.now();
+    scheduleSave();
+    draw();
+  };
+  const N = 512, M = 16, sz = N - 2 * M;
+  const toPx = ([x, y]) => [M + x * sz, M + (1 - y) * sz];
+  const fromEv = (e) => { const r = cv.getBoundingClientRect(); return [((e.clientX - r.left) * (N / r.width) - M) / sz, 1 - ((e.clientY - r.top) * (N / r.height) - M) / sz]; };
+  const near = (p, x, y) => p.findIndex((q) => Math.hypot((q[0] - x) * sz, (q[1] - y) * sz) < 18);
+  function draw() {
+    ctx.clearRect(0, 0, N, N);
+    ctx.fillStyle = "#F7F8FB"; ctx.fillRect(M, M, sz, sz);
+    ctx.strokeStyle = "#E1E5EE"; ctx.lineWidth = 1;
+    for (let i = 1; i < 4; i++) { const v = M + (sz * i) / 4; ctx.beginPath(); ctx.moveTo(v, M); ctx.lineTo(v, M + sz); ctx.moveTo(M, v); ctx.lineTo(M + sz, v); ctx.stroke(); }
+    ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(M, M + sz); ctx.lineTo(M + sz, M); ctx.stroke(); ctx.setLineDash([]);
+    for (const c of [...CHANNELS.filter((x) => x !== ch), ch]) {
+      const p = curvePoints(grade(), c), f = curveFn(p), on = c === ch;
+      if (!on && isIdentity({ [c]: p })) continue;
+      ctx.strokeStyle = CH_COLOR[c]; ctx.globalAlpha = on ? 1 : 0.35; ctx.lineWidth = on ? 3 : 2;
+      ctx.beginPath();
+      for (let i = 0; i <= 256; i++) { const x = i / 256, [px, py] = toPx([x, Math.min(1, Math.max(0, f(x)))]); if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py); }
+      ctx.stroke();
+      if (on) for (const q of p) { const [px, py] = toPx(q); ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(px, py, 8, 0, 7); ctx.fill(); ctx.lineWidth = 3; ctx.stroke(); }
+    }
+    ctx.globalAlpha = 1;
+    $$(".gp-tabs button", el).forEach((b) => b.classList.toggle("on", b.dataset.ch === ch));
+  }
+  cv.onpointerdown = (e) => {
+    const [x, y] = fromEv(e), p = pts();
+    pushed = false;
+    let i = near(p, x, y);
+    if (i < 0) {
+      if (x <= 0 || x >= 1) return;
+      const q = [x, Math.min(1, Math.max(0, y))];
+      p.push(q); p.sort((a, b) => a[0] - b[0]);
+      i = p.indexOf(q);
+      save(p);
+    }
+    drag = i;
+    cv.setPointerCapture(e.pointerId);
+  };
+  cv.onpointermove = (e) => {
+    if (drag < 0) return;
+    let [x, y] = fromEv(e);
+    const p = pts(), last = p.length - 1;
+    const outside = y < -0.08 || y > 1.08 || x < -0.08 || x > 1.08;
+    if (outside && drag > 0 && drag < last) { p.splice(drag, 1); drag = -1; save(p); return; }
+    y = Math.min(1, Math.max(0, y));
+    if (drag === 0) x = Math.min(x, p[1][0] - 0.01);
+    else if (drag === last) x = Math.max(x, p[last - 1][0] + 0.01);
+    else x = Math.min(p[drag + 1][0] - 0.01, Math.max(p[drag - 1][0] + 0.01, x));
+    p[drag] = [Math.min(1, Math.max(0, x)), y];
+    save(p);
+  };
+  cv.onpointerup = () => { drag = -1; if (pushed) refresh(); };
+  cv.ondblclick = (e) => {
+    const [x, y] = fromEv(e), p = pts();
+    const i = near(p, x, y);
+    if (i > 0 && i < p.length - 1) { pushed = false; p.splice(i, 1); save(p); refresh(); }
+  };
+  el.onclick = (e) => {
+    const b = e.target.closest("button, input");
+    if (!b) return;
+    if (b.dataset.ch) { ch = b.dataset.ch; draw(); }
+    else if (b.dataset.g === "close") closeGrade();
+    else if (b.dataset.g === "resetCh") { pushed = false; save([[0, 0], [1, 1]]); refresh(); }
+    else if (b.dataset.g === "resetAll") {
+      S.history.push(JSON.stringify(S.project)); S.future = [];
+      if (S.project.grade) delete S.project.grade[role];
+      S.project.updated = Date.now();
+      scheduleSave(); draw(); refresh();
+    }
+    else if (b.dataset.g === "bypass") S.gradeBypass = b.checked;
+  };
+  draw();
+}
+function closeGrade() { const el = $("#gradePanel"); if (el) el.parentNode.removeChild(el); S.gradeBypass = false; }
 
 // ---------------------------------------------------------------- sources
 async function pickSource(role) {
@@ -1105,7 +1218,10 @@ function renderSources() {
         <div class="lvl"><span class="lvl-l">Mic level</span>
           <input type="range" min="-20" max="20" step="0.5" value="${Number(saved?.volume_db ?? 0)}" data-path="sources.${role}.volume_db" data-num="1" data-lvl="lvl_${role}">
           <span class="stat" id="lvl_${role}">${fmtDb(saved?.volume_db ?? 0)}</span>
-          <button class="icon-btn" data-act="resetLvl" data-role="${role}" title="Back to 0 dB">↺</button></div>`;
+          <button class="icon-btn" data-act="resetLvl" data-role="${role}" title="Back to 0 dB">↺</button></div>
+        <div class="lvl"><span class="lvl-l">Color</span>
+          <button class="btn small" data-act="grade" data-role="${gradeKey(role)}" title="RGB curves for the ${gradeKey(role)} camera">${role === "hostintro" ? "Host curves" : "Curves"}</button>
+          <span class="stat" style="width:auto">${isIdentity(S.project.grade?.[gradeKey(role)]) ? "" : "On"}</span></div>`;
     } else if (f.status === "reconnect") {
       body = `<div class="muted" style="font-size:12px">${esc(saved?.name || "")} — reconnect the file to continue</div>
         <div><button class="btn small primary" data-act="reconnect" data-role="${role}">Reconnect file</button></div>`;
@@ -1463,6 +1579,7 @@ function comp() {
     previewComp.setBrand({ logo: S.brand.logo, quote: S.brand.quote, fonts: S.brand.fonts });
   }
   previewComp.setPeople(S.project.people);
+  previewComp.setGrades(S.project.grade, S.gradeBypass);
   return previewComp;
 }
 
@@ -1510,7 +1627,7 @@ function paintOutput(c, o, frameOf) {
       const e = frameOf(role);
       if (!e) return null;
       const time = role === "guest" ? st + off() : st;
-      return { img: e.img, crop: pathFor(role).crop(time, e.w, e.h, ow, oh, fh, fy, STYLE.maxUpscale) };
+      return { img: e.img, role, crop: pathFor(role).crop(time, e.w, e.h, ow, oh, fh, fy, STYLE.maxUpscale) };
     };
     const gc = it.overlays.find((x) => x.kind === "guestcard" && o >= x.outStart && o < x.outEnd);
     const bo = it.overlays.find((x) => x.kind === "bumper" && o >= x.outStart && o < x.outEnd);
@@ -2260,6 +2377,7 @@ function wireEpisode() {
       setView("hostintro");
       $("#tlScroll").scrollIntoView({ block: "center", behavior: "smooth" });
     }
+    else if (act === "grade") openGrade(b.dataset.role);
     else if (act === "resetLvl") mutate((p) => { setPath(p, `sources.${b.dataset.role}.volume_db`, 0); });
     else if (act === "export") {
       const p = JSON.parse(JSON.stringify(S.project));
@@ -2336,7 +2454,7 @@ async function exportFramed(role) {
   const show = (txt) => { S.exporting.label = txt; const el = $(`#exp_${role}`); if (el) el.textContent = txt; };
   try {
     const res = await renderFramedSource({
-      src, path: pathFor(role), volumeDb: Number(S.project.sources?.[role]?.volume_db ?? 0), writable,
+      src, path: pathFor(role), volumeDb: Number(S.project.sources?.[role]?.volume_db ?? 0), grade: S.project.grade?.[gradeKey(role)], writable,
       onProgress: (p) => show(`${p.phase === "audio" ? "Audio" : "Video"} ${Math.round(p.frac * 100)}%`),
     });
     if (res.blob) download(res.blob, name);

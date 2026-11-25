@@ -3,6 +3,7 @@
 import { buildTimeline, STYLE, FPS } from "./timeline.js";
 import { AudioStream, VideoReader, AUDIO_RATE } from "./media.js";
 import { Compositor } from "./compositor.js";
+import { Grader, gradeLut, isIdentity } from "./grade.js";
 import { timeStretch } from "./stretch.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -111,6 +112,7 @@ export async function renderEpisode({ project, sources, assets, paths, brand, dr
   const comp = new Compositor(canvas);
   await comp.setBrand(brand);
   comp.setPeople(project.people);
+  comp.setGrades(project.grade);
 
   const vcfg = await pickVideoConfig(W, H, draft);
   const acfg = await pickAudioConfig();
@@ -266,13 +268,13 @@ export async function renderEpisode({ project, sources, assets, paths, brand, dr
           const hf = await readers.host.frameAt(st);
           const gf = readers.guest && st + off >= 0 ? await readers.guest.frameAt(st + off) : null;
           comp.drawFootage("split",
-            { img: hf, crop: cropFor(hf, "host", sp.panelW, sp.panelH, sp.faceHeight, sp.faceY, st) },
-            { img: gf, crop: cropFor(gf, "guest", sp.panelW, sp.panelH, sp.faceHeight, sp.faceY, st + off) });
+            { img: hf, role: "host", crop: cropFor(hf, "host", sp.panelW, sp.panelH, sp.faceHeight, sp.faceY, st) },
+            { img: gf, role: "guest", crop: cropFor(gf, "guest", sp.panelW, sp.panelH, sp.faceHeight, sp.faceY, st + off) });
         } else {
           const role = it.src === "hostintro" ? "hostintro" : it.camera === "guest" && readers.guest ? "guest" : "host";
           const ct = camTime(role, st);
           const fr = ct >= 0 ? await readers[role].frameAt(ct) : null;
-          const src = { img: fr, crop: cropFor(fr, role, STYLE.width, STYLE.height, so.faceHeight, so.faceY, ct) };
+          const src = { img: fr, role, crop: cropFor(fr, role, STYLE.width, STYLE.height, so.faceHeight, so.faceY, ct) };
           if (gc) {
             comp.drawGuestCard(t - gc.outStart, gc.person);
             comp.drawSlidePanel((t - gc.cardEnd) / (gc.outEnd - gc.cardEnd), src);
@@ -322,7 +324,7 @@ function fmtShort(t) {
  * Export one source on its own, face-framed full screen (1920x1080, 30 fps), with its own audio.
  * src: Mp4Source · path: CameraPath · volumeDb: mic level
  */
-export async function renderFramedSource({ src, path, volumeDb = 0, writable, onProgress, signal }) {
+export async function renderFramedSource({ src, path, volumeDb = 0, grade = null, writable, onProgress, signal }) {
   const W = STYLE.width, H = STYLE.height;
   const canvas = new OffscreenCanvas(W, H);
   const ctx = canvas.getContext("2d", { alpha: false });
@@ -382,6 +384,8 @@ export async function renderFramedSource({ src, path, volumeDb = 0, writable, on
   });
   venc.configure(vcfg);
   const reader = new VideoReader(src);
+  const lut = grade && !isIdentity(grade) ? gradeLut(grade) : null;
+  const grader = lut ? new Grader() : null;
   const N = Math.round(dur * FPS);
   const so = STYLE.solo;
   try {
@@ -391,7 +395,12 @@ export async function renderFramedSource({ src, path, volumeDb = 0, writable, on
       const fr = await reader.frameAt(t);
       ctx.fillStyle = "#000";
       ctx.fillRect(0, 0, W, H);
-      if (fr) ctx.drawImage(fr, ...path.crop(t, fr.displayWidth, fr.displayHeight, W, H, so.faceHeight, so.faceY, STYLE.maxUpscale), 0, 0, W, H);
+      if (fr) {
+        const crop = path.crop(t, fr.displayWidth, fr.displayHeight, W, H, so.faceHeight, so.faceY, STYLE.maxUpscale);
+        const gr = lut && grader.ok ? grader.apply(fr, crop, lut, fr.displayWidth, fr.displayHeight) : null;
+        if (gr) ctx.drawImage(gr.canvas, 0, 0, gr.w, gr.h, 0, 0, W, H);
+        else ctx.drawImage(fr, ...crop, 0, 0, W, H);
+      }
       const vf = new VideoFrame(canvas, { timestamp: Math.round(t * 1e6), duration: Math.round(1e6 / FPS) });
       venc.encode(vf, { keyFrame: f % (FPS * 2) === 0 });
       vf.close();
