@@ -27,22 +27,18 @@ function bezier(x1, y1, x2, y2) {
 const ease7070 = bezier(0.7, 0, 0.3, 1);          // AE ease, 70% influence both sides
 const easyEase = bezier(1 / 3, 0, 2 / 3, 1);       // AE Easy Ease (33.33%)
 
-// Lower-third line in, measured frame by frame from the After Effects render
-// (LowerThirds_Locked_1.mov): [opacity, rise left (0..1 of STYLE.l3.rise)] for each frame after
-// the line starts. The out is the same curve played backwards.
-const L3_IN = [
-  [0, 1], [0.035, 0.942], [0.128, 0.808], [0.294, 0.617], [0.445, 0.458], [0.559, 0.358],
-  [0.649, 0.283], [0.719, 0.225], [0.778, 0.175], [0.816, 0.133], [0.867, 0.108], [0.903, 0.083],
-  [0.929, 0.058], [0.950, 0.042], [0.960, 0.033], [0.983, 0.025], [0.998, 0.017], [1, 0.008], [1, 0],
-];
-function l3Curve(f) {                              // f = frames since this line started (fractional ok)
-  if (f <= 0) return L3_IN[0];
-  if (f >= L3_IN.length - 1) return L3_IN[L3_IN.length - 1];
-  const i = Math.floor(f), k = f - i, a = L3_IN[i], b = L3_IN[i + 1];
-  return [lerp(a[0], b[0], k), lerp(a[1], b[1], k)];
+// Lower-third line in, fitted to the After Effects render (LowerThirds_Locked_1.mov, measured frame
+// by frame; both curves match it within 0.3%). Position and opacity have their own ease; the out
+// is the same curve played backwards.
+const l3Pos = bezier(0.214, 0.189, 0.018, 0.982);   // over 19.33 f, starting 0.13 f after the line's start
+const l3Op = bezier(0.273, 0, 0.082, 0.829);        // over 16.69 f, starting 0.415 f before it
+/** f = frames since this line started → [opacity, rise left (0..1)] */
+function l3Curve(f) {
+  if (f <= 0) return [0, 1];
+  return [clamp01(l3Op((f + 0.415) / 16.689)), 1 - l3Pos((f - 0.13) / 19.332)];
 }
 
-export const DEFAULT_FONTS = { title: "Barlow Condensed", bold: "Inter", regular: "Inter" };
+export const DEFAULT_FONTS = { title: "Barlow Condensed", bold: "Inter", regular: "Inter", l3: null };   // l3: null = the regular font
 
 export class Compositor {
   constructor(canvas) {
@@ -65,8 +61,10 @@ export class Compositor {
       document.fonts.load(`400 48px "${this.fonts.regular}"`),
       document.fonts.load(`300 48px "${this.fonts.regular}"`),
       document.fonts.load(`400 140px "${this.fonts.regular}"`),
+      this.fonts.l3 ? document.fonts.load(`400 48px "${this.fonts.l3}"`) : null,
     ]).catch(() => {});
     this.splitBg = null;
+    this.l3Sprites = new Map();
   }
 
   setPeople(people) {
@@ -174,31 +172,56 @@ export class Compositor {
       x = (role === "guest" ? sp.rightX : sp.leftX) + 24;
       base = sp.panelY + sp.panelH - 28 - (n - 1) * L.line;
     }
-    c.font = `${L.weight} ${L.size}px "${this.fonts.regular}"`;
-    c.letterSpacing = `${L.tracking * L.size}px`;
-    c.textBaseline = "alphabetic";
-    c.fillStyle = "#FFFFFF";
-    const sh = L.shadow, rad = (sh.direction * Math.PI) / 180;   // AE: 0° = up, clockwise
-    c.shadowColor = `rgba(0,0,0,${sh.opacity})`;
-    c.shadowOffsetX = Math.sin(rad) * sh.distance * this.scale;
-    c.shadowOffsetY = -Math.cos(rad) * sh.distance * this.scale;
-    c.shadowBlur = sh.softness * 0.6 * this.scale;
     const f = t * 30;                              // frames
+    const end = L.inF + L.holdF + L.outF + (n - 1) * L.lineOffsetF;   // 144 f for 3 lines
     lines.forEach((text, j) => {
       // in: top line first (1, 2, 3, …) · out: bottom line first (…, 3, 2, 1) · 2 frames apart.
       // The out mirrors the in exactly (the whole L3 is symmetric in time).
-      const end = L.inF + L.holdF + L.outF + (n - 1) * L.lineOffsetF;   // 144 f for 3 lines
       const fromIn = f - j * L.lineOffsetF;
       const fromOut = end - f - j * L.lineOffsetF;
       if (fromIn <= 0 || fromOut <= 0) return;
       const [u, rise] = l3Curve(Math.min(fromIn, fromOut));
       if (u <= 0.002) return;
+      // drawn from a pre-rendered image so the line can sit between pixels: text drawn directly
+      // snaps to whole pixels and steps visibly as it settles
+      const sp = this._l3Sprite(text);
       c.globalAlpha = u;
-      c.fillText(text, x, base + j * L.line + L.rise * rise);
+      c.drawImage(sp.canvas, x - sp.ox, base + j * L.line + L.rise * rise - sp.oy, sp.w, sp.h);
     });
     c.globalAlpha = 1;
-    c.letterSpacing = "0px";
-    c.shadowColor = "transparent";
+  }
+
+  /** One L3 line with its drop shadow, rendered once at output resolution. */
+  _l3Sprite(text) {
+    const L = STYLE.l3, k = this.scale;
+    const font = this.fonts.l3 ? `400 ${L.size}px "${this.fonts.l3}"` : `${L.weight} ${L.size}px "${this.fonts.regular}"`;
+    const key = font + "|" + k + "|" + text;
+    this.l3Sprites ??= new Map();
+    let sp = this.l3Sprites.get(key);
+    if (sp) return sp;
+    const pad = 60, ox = pad, oy = L.size + pad;                    // baseline sits oy below the top
+    const m = this.ctx;
+    m.font = font;
+    m.letterSpacing = `${L.tracking * L.size}px`;
+    const w = Math.ceil(m.measureText(text).width) + 2 * pad, h = Math.ceil(L.size * 1.4) + 2 * pad;
+    m.letterSpacing = "0px";
+    const cv = new OffscreenCanvas(Math.ceil(w * k), Math.ceil(h * k));
+    const c = cv.getContext("2d");
+    c.scale(k, k);
+    c.font = font;
+    c.letterSpacing = `${L.tracking * L.size}px`;
+    c.textBaseline = "alphabetic";
+    c.fillStyle = "#FFFFFF";
+    const sh = L.shadow, rad = (sh.direction * Math.PI) / 180;   // AE: 0° = up, clockwise
+    c.shadowColor = `rgba(0,0,0,${sh.opacity})`;
+    c.shadowOffsetX = Math.sin(rad) * sh.distance * k;
+    c.shadowOffsetY = -Math.cos(rad) * sh.distance * k;
+    c.shadowBlur = sh.softness * 0.6 * k;
+    c.fillText(text, ox, oy);
+    sp = { canvas: cv, ox, oy, w: cv.width / k, h: cv.height / k };
+    if (this.l3Sprites.size > 40) this.l3Sprites.clear();
+    if (document.fonts.check(font, text)) this.l3Sprites.set(key, sp);   // don't keep a fallback-font copy
+    return sp;
   }
 
   // -- guest card + host slide-in ------------------------------------------------
